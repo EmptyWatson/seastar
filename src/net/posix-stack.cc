@@ -20,7 +20,8 @@
  */
 
 #include <random>
-
+#include <sys/socket.h>
+#include <sys/types.h>
 #include <linux/if.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
