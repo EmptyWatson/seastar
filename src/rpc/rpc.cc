@@ -1094,7 +1094,7 @@ future<> server::connection::send_unknown_verb_reply(std::optional<rpc_clock_typ
   {}
 
   server::server(protocol_base* proto, server_options opts, const socket_address& addr, resource_limits limits)
-      : server(proto, seastar::listen(addr, listen_options{true, opts.load_balancing_algorithm}), limits, opts)
+      : server(proto, seastar::listen(addr, listen_options{true, false, opts.load_balancing_algorithm}), limits, opts)
   {}
 
   server::server(protocol_base* proto, server_socket ss, resource_limits limits, server_options opts)

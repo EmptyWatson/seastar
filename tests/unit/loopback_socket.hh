@@ -285,6 +285,13 @@ public:
     virtual void set_reuseaddr(bool reuseaddr) override {}
     virtual bool get_reuseaddr() const override { return false; };
 
+    virtual void set_ip_transparent(bool ip_transparent) override {
+    }
+
+    virtual bool get_ip_transparent() const override {
+        return false;
+    }
+
     void shutdown() override {
         if (_connect_abort) {
             _connect_abort->set_exception(std::make_exception_ptr(std::system_error(ECONNABORTED, std::system_category())));

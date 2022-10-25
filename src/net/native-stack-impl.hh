@@ -138,6 +138,14 @@ public:
         return false;
     }
 
+    virtual void set_ip_transparent(bool ip_transparent) override {
+
+    }
+
+    virtual bool get_ip_transparent() const override {
+        return false;
+    }
+
     virtual void shutdown() override {
         if (_conn) {
             _conn->shutdown_connect();

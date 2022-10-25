@@ -387,6 +387,7 @@ class posix_socket_impl final : public socket_impl {
     pollable_fd _fd;
     std::pmr::polymorphic_allocator<char>* _allocator;
     bool _reuseaddr = false;
+    bool _ip_transparent = false;
 
     future<> find_port_and_connect(socket_address sa, socket_address local, transport proto = transport::TCP) {
         static thread_local std::default_random_engine random_engine{std::random_device{}()};
@@ -399,6 +400,7 @@ class posix_socket_impl final : public socket_impl {
         return repeat([this, sa, local, proto, attempts = 0, requested_port = ntoh(local.as_posix_sockaddr_in().sin_port)] () mutable {
             _fd = engine().make_pollable_fd(sa, int(proto));
             _fd.get_file_desc().setsockopt(SOL_SOCKET, SO_REUSEADDR, int(_reuseaddr));
+            _fd.get_file_desc().setsockopt(SOL_IP, IP_TRANSPARENT, int(_ip_transparent));
             uint16_t port = attempts++ < 5 && requested_port == 0 && proto == transport::TCP ? u(random_engine) * smp::count + this_shard_id() : requested_port;
             local.as_posix_sockaddr_in().sin_port = hton(port);
             return futurize_invoke([this, sa, local] { return engine().posix_connect(_fd, sa, local); }).then_wrapped([port, requested_port] (future<> f) {
@@ -461,6 +463,21 @@ public:
             return _reuseaddr;
         }
     }
+
+    void set_ip_transparent(bool ip_transparent) override {
+        _ip_transparent = ip_transparent;
+        if (_fd) {
+            _fd.get_file_desc().setsockopt(SOL_IP, IP_TRANSPARENT, int(_ip_transparent));
+        }
+    }
+
+    bool get_ip_transparent() const override {
+        if(_fd) {
+            return _fd.get_file_desc().getsockopt<int>(SOL_IP, IP_TRANSPARENT);
+        } else {
+            return _ip_transparent;
+        }
+    }    
 
     virtual void shutdown() override {
         if (_fd) {
