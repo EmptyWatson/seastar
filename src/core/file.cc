@@ -24,6 +24,7 @@
 #include <sys/syscall.h>
 #include <dirent.h>
 #include <linux/types.h> // for xfs, below
+#include <linux/falloc.h>
 #include <sys/ioctl.h>
 #include <xfs/linux.h>
 #define min min    /* prevent xfs.h from defining min() as a macro */
