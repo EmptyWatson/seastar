@@ -244,11 +244,19 @@ public:
     /// \return a \ref connected_socket representing the connection.
     future<connected_socket> connect(socket_address sa, socket_address local = {}, transport proto = transport::TCP);
 
+    // IP_TRANSPARENT
+    void set_ip_transparent(bool ip_transparent);
+
+    // IP_TRANSPARENT
+    bool get_ip_transparent() const;
+
     /// Sets SO_REUSEADDR option (enable reuseaddr option on a socket)
     void set_reuseaddr(bool reuseaddr);
     /// Gets O_REUSEADDR option
     /// \return whether the reuseaddr option is enabled or not
     bool get_reuseaddr() const;
+
+
     /// Stops any in-flight connection attempt.
     ///
     /// Cancels the connection attempt if it's still in progress, and
@@ -318,7 +326,8 @@ public:
 /// @}
 
 struct listen_options {
-    bool reuse_address = false;
+    bool reuse_address  = false;
+    bool ip_transparent = false;
     server_socket::load_balancing_algorithm lba = server_socket::load_balancing_algorithm::default_;
     transport proto = transport::TCP;
     int listen_backlog = 100;

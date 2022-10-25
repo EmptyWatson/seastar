@@ -261,6 +261,13 @@ public:
     virtual void set_reuseaddr(bool reuseaddr) override {}
     virtual bool get_reuseaddr() const override { return false; };
 
+    virtual void set_ip_transparent(bool ip_transparent) override {
+    }
+
+    virtual bool get_ip_transparent() const override {
+        return false;
+    }
+
     void shutdown() override {
         _b1->shutdown();
         (void)smp::submit_to(_b2.get_owner_shard(), [b2 = std::move(_b2)] {

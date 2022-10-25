@@ -1416,6 +1416,14 @@ public:
     bool get_reuseaddr() const override {
       return _socket.get_reuseaddr();
     }
+    
+    virtual void set_ip_transparent(bool ip_transparent) override {
+    }
+
+    virtual bool get_ip_transparent() const override {
+        return false;
+    }
+
     virtual void shutdown() override {
         _socket.shutdown();
     }
