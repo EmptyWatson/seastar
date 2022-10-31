@@ -337,6 +337,10 @@ public:
     gnutls_priority_t get_priority() const {
         return _priority.get();
     }
+
+	void disable_verification(bool v){
+		_disable_verification = v;
+	}
 private:
     friend class credentials_builder;
     friend class session;
@@ -359,6 +363,8 @@ private:
     client_auth _client_auth = client_auth::NONE;
     bool _load_system_trust = false;
     semaphore _system_trust_sem {1};
+
+	bool _disable_verification = false;
 };
 
 tls::certificate_credentials::certificate_credentials()
@@ -430,6 +436,10 @@ future<> tls::certificate_credentials::set_system_trust() {
 
 void tls::certificate_credentials::set_priority_string(const sstring& prio) {
     _impl->set_priority_string(prio);
+}
+
+void tls::certificate_credentials::disable_verification(bool v) {
+    _impl->disable_verification(v);
 }
 
 tls::server_credentials::server_credentials(shared_ptr<dh_params> dh)
@@ -980,6 +990,9 @@ public:
     }
 
     void verify() {
+    	if(_creds->_disable_verification){
+			return;
+		}
         unsigned int status;
         auto res = gnutls_certificate_verify_peers3(*this, _type != type::CLIENT || _hostname.empty()
                         ? nullptr : _hostname.c_str(), &status);

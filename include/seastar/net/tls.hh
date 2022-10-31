@@ -127,6 +127,9 @@ namespace tls {
 
     template<typename Base>
     class reloadable_credentials;
+    enum class server_auth {
+        NONE, REQUEST, REQUIRE
+    };
 
     /**
      * Holds certificates and keys.
@@ -168,6 +171,8 @@ namespace tls {
          * Allows specifying order and allowance for handshake alg.
          */
         void set_priority_string(const sstring&);
+
+		void disable_verification(bool v);
     private:
         class impl;
         friend class session;
