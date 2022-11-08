@@ -1718,12 +1718,20 @@ public:
     bool get_reuseaddr() const override {
       return _socket.get_reuseaddr();
     }
-    
+
+     void set_reuseport(bool reuseport) override {
+      _socket.set_reuseport(reuseport);
+    }
+    bool get_reuseport() const override {
+      return _socket.get_reuseport();
+    }
+
     virtual void set_ip_transparent(bool ip_transparent) override {
+    	_socket.set_ip_transparent(ip_transparent);
     }
 
     virtual bool get_ip_transparent() const override {
-        return false;
+        return _socket.get_ip_transparent();
     }
 
     virtual void shutdown() override {

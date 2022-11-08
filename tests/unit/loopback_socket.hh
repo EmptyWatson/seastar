@@ -285,6 +285,9 @@ public:
     virtual void set_reuseaddr(bool reuseaddr) override {}
     virtual bool get_reuseaddr() const override { return false; };
 
+    virtual void set_reuseport(bool reuseaddr) override {}
+    virtual bool get_reuseport() const override { return false; };
+
     virtual void set_ip_transparent(bool ip_transparent) override {
     }
 

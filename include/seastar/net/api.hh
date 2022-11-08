@@ -284,6 +284,9 @@ public:
     /// \return whether the reuseaddr option is enabled or not
     bool get_reuseaddr() const;
 
+    void set_reuseport(bool reuseaddr);
+
+    bool get_reuseport() const;
 
     /// Stops any in-flight connection attempt.
     ///
@@ -372,6 +375,7 @@ public:
 
 struct listen_options {
     bool reuse_address  = false;
+    bool reuse_port = false;
     bool ip_transparent = false;
     server_socket::load_balancing_algorithm lba = server_socket::load_balancing_algorithm::default_;
     transport proto = transport::TCP;
