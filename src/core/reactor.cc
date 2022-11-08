@@ -1370,8 +1370,9 @@ reactor::posix_listen(socket_address sa, listen_options opts) {
         fd.setsockopt(SOL_IP, IP_TRANSPARENT, 1);
     }
 
-    if (_reuseport && !sa.is_af_unix())
+    if (opts.reuse_port|| (_reuseport && !sa.is_af_unix())) {
         fd.setsockopt(SOL_SOCKET, SO_REUSEPORT, 1);
+    }
 
     try {
         fd.bind(sa.u.sa, sa.length());

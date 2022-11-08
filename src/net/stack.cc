@@ -149,6 +149,22 @@ bool socket::get_reuseaddr() const {
     return _si->get_reuseaddr();
 }
 
+void socket::set_reuseport(bool reuseaddr) {
+    _si->set_reuseport(reuseaddr);
+}
+
+bool socket::get_reuseport() const {
+    return _si->get_reuseport();
+}
+
+void socket::set_ip_transparent(bool ip_transparent) {
+    _si->set_ip_transparent(ip_transparent);
+}
+
+bool socket::get_ip_transparent() const {
+    return _si->get_ip_transparent();
+}
+
 void socket::shutdown() {
     _si->shutdown();
 }

@@ -133,6 +133,16 @@ public:
         // FIXME: implement
         return false;
     }
+	
+    virtual void set_reuseport(bool reuseaddr) override {
+        // FIXME: implement
+        std::cerr << "Reuseaddr is not supported by native stack" << std::endl;
+    }
+
+    virtual bool get_reuseport() const override {
+        // FIXME: implement
+        return false;
+    }
 
     virtual void set_ip_transparent(bool ip_transparent) override {
 

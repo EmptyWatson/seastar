@@ -642,6 +642,8 @@ namespace rpc {
   client::client(const logger& l, void* s, client_options ops, socket socket, const socket_address& addr, const socket_address& local)
   : rpc::connection(l, s), _socket(std::move(socket)), _server_addr(addr), _options(ops) {
        _socket.set_reuseaddr(ops.reuseaddr);
+	   _socket.set_reuseaddr(ops.reuseaddr);
+	   
       // Run client in the background.
       // Communicate result via _stopped.
       // The caller has to call client::stop() to synchronize.
@@ -990,7 +992,7 @@ future<> server::connection::send_unknown_verb_reply(compat::optional<rpc_clock_
   {}
 
   server::server(protocol_base* proto, server_options opts, const socket_address& addr, resource_limits limits)
-      : server(proto, seastar::listen(addr, listen_options{true, false, opts.load_balancing_algorithm}), limits, opts)
+      : server(proto, seastar::listen(addr, listen_options{true, false, false, opts.load_balancing_algorithm}), limits, opts)
   {}
 
   server::server(protocol_base* proto, server_socket ss, resource_limits limits, server_options opts)
