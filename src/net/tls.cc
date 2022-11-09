@@ -401,6 +401,10 @@ public:
     void set_dn_verification_callback(dn_callback cb) {
         _dn_callback = std::move(cb);
     }
+
+    void disable_verification(bool v){
+        _disable_verification = v;
+    }
 private:
     friend class credentials_builder;
     friend class session;
@@ -424,6 +428,7 @@ private:
     bool _load_system_trust = false;
     semaphore _system_trust_sem {1};
     dn_callback _dn_callback;
+    bool _disable_verification = false;
 };
 
 tls::certificate_credentials::certificate_credentials()
@@ -499,6 +504,10 @@ void tls::certificate_credentials::set_priority_string(const sstring& prio) {
 
 void tls::certificate_credentials::set_dn_verification_callback(dn_callback cb) {
     _impl->set_dn_verification_callback(std::move(cb));
+}
+
+void tls::certificate_credentials::disable_verification(bool v) {
+    _impl->disable_verification(v);
 }
 
 tls::server_credentials::server_credentials()
@@ -1194,6 +1203,9 @@ public:
     }
 
     void verify() {
+        if(_creds->_disable_verification){
+            return;
+        }
         unsigned int status;
         auto res = gnutls_certificate_verify_peers3(*this, _type != type::CLIENT || _hostname.empty()
                         ? nullptr : _hostname.c_str(), &status);

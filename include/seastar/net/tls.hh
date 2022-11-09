@@ -210,6 +210,7 @@ namespace tls {
          */
         void set_dn_verification_callback(dn_callback);
 
+        void disable_verification(bool v);
     private:
         class impl;
         friend class session;
