@@ -25,6 +25,7 @@
 #include <dirent.h>
 #include <linux/types.h> // for xfs, below
 #include <linux/fs.h> // BLKBSZGET
+#include <linux/falloc.h>
 #include <linux/major.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
@@ -1133,11 +1134,13 @@ future<> file::set_lifetime_hint_impl(int op, uint64_t hint) noexcept {
 }
 
 future<> file::set_file_lifetime_hint(uint64_t hint) noexcept {
-    return set_lifetime_hint_impl(F_SET_FILE_RW_HINT, hint);
+    //return set_lifetime_hint_impl(F_SET_FILE_RW_HINT, hint);
+    return make_ready_future<>();
 }
 
 future<> file::set_inode_lifetime_hint(uint64_t hint) noexcept {
-    return set_lifetime_hint_impl(F_SET_RW_HINT, hint);
+    //return set_lifetime_hint_impl(F_SET_RW_HINT, hint);
+    return make_ready_future<>();
 }
 
 future<uint64_t> file::get_lifetime_hint_impl(int op) noexcept {
@@ -1157,11 +1160,13 @@ future<uint64_t> file::get_lifetime_hint_impl(int op) noexcept {
 }
 
 future<uint64_t> file::get_file_lifetime_hint() noexcept {
-    return get_lifetime_hint_impl(F_GET_FILE_RW_HINT);
+    //return get_lifetime_hint_impl(F_GET_FILE_RW_HINT);
+    return make_ready_future<uint64_t>(0);
 }
 
 future<uint64_t> file::get_inode_lifetime_hint() noexcept {
-    return get_lifetime_hint_impl(F_GET_RW_HINT);
+    //return get_lifetime_hint_impl(F_GET_RW_HINT);
+    return make_ready_future<uint64_t>(0);
 }
 
 future<temporary_buffer<uint8_t>>

@@ -140,7 +140,8 @@ def identify_best_standard(cpp_standards, compiler):
     raise Exception(f"{compiler} does not seem to support any of Seastar's preferred C++ standards - {cpp_standards}. Please upgrade your compiler.")
 
 if args.cpp_standard == '':
-    cpp_standards = ['23', '20', '17']
+    #cpp_standards = ['23', '20', '17']
+    cpp_standards = ['20', '17']
     args.cpp_standard = identify_best_standard(cpp_standards, compiler=args.cxx)
 
 def infer_dpdk_machine(user_cflags):
