@@ -21,67 +21,68 @@
 
 #pragma once
 
-#include <seastar/core/seastar.hh>
-#include <seastar/core/iostream.hh>
 #include <seastar/core/aligned_buffer.hh>
 #include <seastar/core/cacheline.hh>
+#include <seastar/core/circular_buffer.hh>
 #include <seastar/core/circular_buffer_fixed_capacity.hh>
+#include <seastar/core/condition-variable.hh>
+#include <seastar/core/enum.hh>
+#include <seastar/core/fair_queue.hh>
+#include <seastar/core/file.hh>
+#include <seastar/core/future.hh>
 #include <seastar/core/idle_cpu_handler.hh>
+#include <seastar/core/internal/io_request.hh>
+#include <seastar/core/internal/io_sink.hh>
+#include <seastar/core/iostream.hh>
+#include <seastar/core/linux-aio.hh>
+#include <seastar/core/lowres_clock.hh>
+#include <seastar/core/make_task.hh>
+#include <seastar/core/manual_clock.hh>
+#include <seastar/core/memory.hh>
+#include <seastar/core/metrics_registration.hh>
+#include <seastar/core/posix.hh>
+#include <seastar/core/reactor_config.hh>
+#include <seastar/core/scattered_message.hh>
+#include <seastar/core/scheduling.hh>
+#include <seastar/core/scheduling_specific.hh>
+#include <seastar/core/seastar.hh>
+#include <seastar/core/semaphore.hh>
+#include <seastar/core/smp.hh>
+#include <seastar/core/sstring.hh>
+#include <seastar/core/temporary_buffer.hh>
+#include <seastar/core/thread_cputime_clock.hh>
+#include <seastar/core/timer.hh>
+#include <seastar/net/api.hh>
+#include <seastar/util/eclipse.hh>
+#include <seastar/util/log.hh>
+#include <seastar/util/std-compat.hh>
+#include <boost/container/static_vector.hpp>
+#include <boost/lockfree/spsc_queue.hpp>
+#include <boost/next_prior.hpp>
+#include <boost/range/irange.hpp>
+#include <boost/thread/barrier.hpp>
+#include <algorithm>
+#include <atomic>
+#include <cassert>
+#include <chrono>
+#include <cstring>
 #include <memory>
+#include <queue>
+#include <ratio>
+#include <set>
+#include <stack>
+#include <stdexcept>
+#include <string_view>
+#include <system_error>
+#include <thread>
 #include <type_traits>
+#include <unordered_map>
+#include <vector>
+#include <unistd.h>
 #include <sys/epoll.h>
 #include <sys/types.h>
 #include <sys/socket.h>
-#include <unordered_map>
 #include <netinet/ip.h>
-#include <cstring>
-#include <cassert>
-#include <stdexcept>
-#include <unistd.h>
-#include <vector>
-#include <queue>
-#include <algorithm>
-#include <thread>
-#include <system_error>
-#include <chrono>
-#include <ratio>
-#include <atomic>
-#include <stack>
-#include <seastar/util/std-compat.hh>
-#include <boost/next_prior.hpp>
-#include <boost/lockfree/spsc_queue.hpp>
-#include <boost/thread/barrier.hpp>
-#include <boost/container/static_vector.hpp>
-#include <set>
-#include <seastar/core/reactor_config.hh>
-#include <seastar/core/linux-aio.hh>
-#include <seastar/util/eclipse.hh>
-#include <seastar/core/future.hh>
-#include <seastar/core/posix.hh>
-#include <seastar/core/sstring.hh>
-#include <seastar/net/api.hh>
-#include <seastar/core/temporary_buffer.hh>
-#include <seastar/core/circular_buffer.hh>
-#include <seastar/core/file.hh>
-#include <seastar/core/semaphore.hh>
-#include <seastar/core/fair_queue.hh>
-#include <seastar/core/scattered_message.hh>
-#include <seastar/core/enum.hh>
-#include <seastar/core/memory.hh>
-#include <seastar/core/thread_cputime_clock.hh>
-#include <boost/range/irange.hpp>
-#include <seastar/core/timer.hh>
-#include <seastar/core/condition-variable.hh>
-#include <seastar/util/log.hh>
-#include <seastar/core/lowres_clock.hh>
-#include <seastar/core/manual_clock.hh>
-#include <seastar/core/metrics_registration.hh>
-#include <seastar/core/scheduling.hh>
-#include <seastar/core/scheduling_specific.hh>
-#include <seastar/core/smp.hh>
-#include <seastar/core/internal/io_request.hh>
-#include <seastar/core/internal/io_sink.hh>
-#include <seastar/core/make_task.hh>
 #include "internal/pollable_fd.hh"
 #include "internal/poll.hh"
 
@@ -361,7 +362,6 @@ private:
 private:
     static std::chrono::nanoseconds calculate_poll_time();
     static void block_notifier(int);
-    size_t handle_aio_error(internal::linux_abi::iocb* iocb, int ec);
     bool flush_pending_aio();
     steady_clock_type::time_point next_pending_aio() const noexcept;
     bool reap_kernel_completions();
@@ -429,6 +429,7 @@ private:
     void account_runtime(task_queue& tq, sched_clock::duration runtime);
     void account_idle(sched_clock::duration idletime);
     void allocate_scheduling_group_specific_data(scheduling_group sg, scheduling_group_key key);
+    future<> rename_scheduling_group_specific_data(scheduling_group sg);
     future<> init_scheduling_group(scheduling_group sg, sstring name, float shares);
     future<> init_new_scheduling_group_key(scheduling_group_key key, scheduling_group_key_config cfg);
     future<> destroy_scheduling_group(scheduling_group sg) noexcept;
@@ -444,16 +445,16 @@ private:
     future<> do_connect(pollable_fd_state& pfd, socket_address& sa);
 
     future<size_t>
-    do_read_some(pollable_fd_state& fd, void* buffer, size_t size);
+    do_read(pollable_fd_state& fd, void* buffer, size_t size);
     future<size_t>
-    do_read_some(pollable_fd_state& fd, const std::vector<iovec>& iov);
+    do_recvmsg(pollable_fd_state& fd, const std::vector<iovec>& iov);
     future<temporary_buffer<char>>
     do_read_some(pollable_fd_state& fd, internal::buffer_allocator* ba);
 
     future<size_t>
-    do_write_some(pollable_fd_state& fd, const void* buffer, size_t size);
+    do_send(pollable_fd_state& fd, const void* buffer, size_t size);
     future<size_t>
-    do_write_some(pollable_fd_state& fd, net::packet& p);
+    do_sendmsg(pollable_fd_state& fd, net::packet& p);
 
     future<temporary_buffer<char>>
     do_recv_some(pollable_fd_state& fd, internal::buffer_allocator* ba);
@@ -487,14 +488,14 @@ public:
     [[deprecated("Use io_priority_class.update_shares")]]
     future<> update_shares_for_class(io_priority_class pc, uint32_t shares);
     /// @private
-    future<> update_shares_for_queues(io_priority_class pc, uint32_t shares);
+    void update_shares_for_queues(io_priority_class pc, uint32_t shares);
     /// @private
     future<> update_bandwidth_for_queues(io_priority_class pc, uint64_t bandwidth);
 
     [[deprecated("Use io_priority_class.rename")]]
     static future<> rename_priority_class(io_priority_class pc, sstring new_name) noexcept;
     /// @private
-    future<> rename_queues(io_priority_class pc, sstring new_name) noexcept;
+    void rename_queues(io_priority_class pc, sstring new_name);
 
     void configure(const reactor_options& opts);
 
@@ -511,7 +512,7 @@ public:
 
     future<> posix_connect(pollable_fd pfd, socket_address sa, socket_address local);
 
-    future<> write_all(pollable_fd_state& fd, const void* buffer, size_t size);
+    future<> send_all(pollable_fd_state& fd, const void* buffer, size_t size);
 
     future<file> open_file_dma(std::string_view name, open_flags flags, file_open_options options = {}) noexcept;
     future<file> open_directory(std::string_view name) noexcept;
@@ -532,7 +533,15 @@ public:
     future<> chmod(std::string_view name, file_permissions permissions) noexcept;
 
     future<int> inotify_add_watch(int fd, std::string_view path, uint32_t flags);
-    
+
+    future<std::tuple<file_desc, file_desc>> make_pipe();
+    future<std::tuple<pid_t, file_desc, file_desc, file_desc>>
+    spawn(std::string_view pathname,
+          std::vector<sstring> argv,
+          std::vector<sstring> env = {});
+    future<int> waitpid(pid_t pid);
+    void kill(pid_t pid, int sig);
+
     int run() noexcept;
     void exit(int ret);
     future<> when_started() { return _start_promise.get_future(); }
@@ -606,7 +615,7 @@ private:
     void unregister_poller(pollfn* p);
     void replace_poller(pollfn* old, pollfn* neww);
     void register_metrics();
-    future<> write_all_part(pollable_fd_state& fd, const void* buffer, size_t size, size_t completed);
+    future<> send_all_part(pollable_fd_state& fd, const void* buffer, size_t size, size_t completed);
 
     future<> fdatasync(int fd) noexcept;
 
@@ -667,6 +676,7 @@ public:
     future<> readable(pollable_fd_state& fd);
     future<> writeable(pollable_fd_state& fd);
     future<> readable_or_writeable(pollable_fd_state& fd);
+    future<> poll_rdhup(pollable_fd_state& fd);
     void enable_timer(steady_clock_type::time_point when) noexcept;
     /// Sets the "Strict DMA" flag.
     ///
@@ -681,7 +691,9 @@ public:
     void set_bypass_fsync(bool value);
     void update_blocked_reactor_notify_ms(std::chrono::milliseconds ms);
     std::chrono::milliseconds get_blocked_reactor_notify_ms() const;
-    // For testing:
+    /// For testing, sets the stall reporting function which is called when
+    /// a stall is detected (and not suppressed). Setting the function also
+    /// resets the supression state.
     void set_stall_detector_report_function(std::function<void ()> report);
     std::function<void ()> get_stall_detector_report_function() const;
 };

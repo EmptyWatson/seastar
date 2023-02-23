@@ -404,15 +404,18 @@ std::vector<io_request::part> io_request::split(size_t max_length) {
 
 std::vector<io_request::part> io_request::split_buffer(size_t max_length) {
     std::vector<part> ret;
-    ret.reserve((_size.len + max_length - 1) / max_length);
+    // the layout of _read and _write should be identical, otherwise we need to
+    // have two different implementations for each of them
+    static_assert(std::is_same_v<decltype(_read), decltype(_write)>);
+    const auto& op = _read;
+    ret.reserve((op.size + max_length - 1) / max_length);
 
     size_t off = 0;
     do {
-        size_t len = std::min(_size.len - off, max_length);
-        io_request part(_op, _fd, _attr.pos + off, _ptr.addr + off, len, _nowait_works);
-        ret.push_back({ std::move(part), len, {} });
+        size_t len = std::min(op.size - off, max_length);
+        ret.push_back({ sub_req_buffer(off, len), len, {} });
         off += len;
-    } while (off < _size.len);
+    } while (off < op.size);
 
     return ret;
 }
@@ -420,10 +423,14 @@ std::vector<io_request::part> io_request::split_buffer(size_t max_length) {
 std::vector<io_request::part> io_request::split_iovec(size_t max_length) {
     std::vector<part> parts;
     std::vector<::iovec> vecs;
-    ::iovec* cur = iov();
+    // the layout of _readv and _writev should be identical, otherwise we need to
+    // have two different implementations for each of them
+    static_assert(std::is_same_v<decltype(_readv), decltype(_writev)>);
+    const auto& op = _readv;
+    ::iovec* cur = op.iovec;
     size_t pos = 0;
     size_t off = 0;
-    ::iovec* end = cur + iov_len();
+    ::iovec* end = cur + op.iov_len;
     size_t remaining = max_length;
 
     while (cur != end) {
@@ -445,7 +452,7 @@ std::vector<io_request::part> io_request::split_iovec(size_t max_length) {
             vecs.push_back(std::move(iov));
         }
 
-        io_request req(_op, _fd, _attr.pos + pos, vecs.data(), vecs.size(), _nowait_works);
+        auto req = sub_req_iovec(pos, vecs);
         parts.push_back({ std::move(req), max_length, std::move(vecs) });
         pos += max_length;
         remaining = max_length;
@@ -453,11 +460,45 @@ std::vector<io_request::part> io_request::split_iovec(size_t max_length) {
 
     if (vecs.size() > 0) {
         assert(remaining < max_length);
-        io_request req(_op, _fd, _attr.pos + pos, vecs.data(), vecs.size(), _nowait_works);
+        auto req = sub_req_iovec(pos, vecs);
         parts.push_back({ std::move(req), max_length - remaining, std::move(vecs) });
     }
 
     return parts;
+}
+
+sstring io_request::opname() const {
+    switch (_op) {
+    case io_request::operation::fdatasync:
+        return "fdatasync";
+    case io_request::operation::write:
+        return "write";
+    case io_request::operation::writev:
+        return "vectored write";
+    case io_request::operation::read:
+        return "read";
+    case io_request::operation::readv:
+        return "vectored read";
+    case io_request::operation::recv:
+        return "recv";
+    case io_request::operation::recvmsg:
+        return "recvmsg";
+    case io_request::operation::send:
+        return "send";
+    case io_request::operation::sendmsg:
+        return "sendmsg";
+    case io_request::operation::accept:
+        return "accept";
+    case io_request::operation::connect:
+        return "connect";
+    case io_request::operation::poll_add:
+        return "poll add";
+    case io_request::operation::poll_remove:
+        return "poll remove";
+    case io_request::operation::cancel:
+        return "cancel";
+    }
+    std::abort();
 }
 
 } // internal namespace
@@ -627,7 +668,9 @@ io_priority_class io_priority_class::register_one(sstring name, uint32_t shares)
 future<> io_priority_class::update_shares(uint32_t shares) const {
     // Keep registered shares intact, just update the ones
     // on reactor queues
-    return engine().update_shares_for_queues(*this, shares);
+    return futurize_invoke([this, shares] {
+        engine().update_shares_for_queues(*this, shares);
+    });
 }
 
 future<> io_priority_class::update_bandwidth(uint64_t bandwidth) const {
@@ -669,7 +712,7 @@ future<> io_priority_class::rename(sstring new_name) noexcept {
         }
 
         return smp::invoke_on_all([this, new_name = std::move(new_name)] {
-            return engine().rename_queues(*this, new_name);
+            engine().rename_queues(*this, new_name);
         });
     });
 }
@@ -962,15 +1005,13 @@ io_queue::clock_type::time_point io_queue::next_pending_aio() const noexcept {
     return next;
 }
 
-future<>
+void
 io_queue::update_shares_for_class(const io_priority_class pc, size_t new_shares) {
-    return futurize_invoke([this, pc, new_shares] {
-        auto& pclass = find_or_create_class(pc);
-        pclass.update_shares(new_shares);
-        for (auto&& s : _streams) {
-            s.update_shares_for_class(pclass.fq_class(), new_shares);
-        }
-    });
+    auto& pclass = find_or_create_class(pc);
+    pclass.update_shares(new_shares);
+    for (auto&& s : _streams) {
+        s.update_shares_for_class(pclass.fq_class(), new_shares);
+    }
 }
 
 future<> io_queue::update_bandwidth_for_class(const io_priority_class pc, uint64_t new_bandwidth) {

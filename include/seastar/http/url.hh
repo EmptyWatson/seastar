@@ -16,10 +16,29 @@
  * under the License.
  */
 /*
- * Copyright (C) 2016 ScyllaDB
+ * Copyright (C) 2022 Scylladb, Ltd.
  */
-#pragma once
 
-#define GCC6_CONCEPT(x...)
-#define GCC6_NO_CONCEPT(x...) x
+#include <seastar/core/sstring.hh>
 
+namespace seastar {
+
+namespace http {
+namespace internal {
+
+bool url_decode(const std::string_view& in, sstring& out);
+
+/**
+ * Makes a percent-encoded string out of the given parameter
+ *
+ * Note, that it does NOT parse and encode a URL correctly handling
+ * all the delimeters in arguments. It's up to the caller to split
+ * the URL into path and arguments (both names and values) and use
+ * this helper to encode individual strings
+ */
+sstring url_encode(const std::string_view& in);
+
+} // internal namespace
+} // http namespace
+
+} // seastar namespace

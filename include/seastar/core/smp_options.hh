@@ -22,6 +22,7 @@
 #pragma once
 
 #include <seastar/util/program-options.hh>
+#include <string>
 
 /// \file
 
@@ -55,12 +56,6 @@ struct smp_options : public program_options::option_group {
     ///
     /// Default: \p true.
     program_options::value<bool> thread_affinity;
-    /// \brief Number of IO queues.
-    ///
-    /// Each IO unit will be responsible for a fraction of the IO requests.
-    /// Defaults to the number of threads
-    /// \note Unused when seastar is compiled without \p HWLOC support.
-    program_options::value<unsigned> num_io_queues;
     /// \brief Number of IO groups.
     ///
     /// Each IO group will be responsible for a fraction of the IO requests.
@@ -96,6 +91,11 @@ struct smp_options : public program_options::option_group {
     /// * \ref reactor_options::abort_on_seastar_bad_alloc
     /// * \ref reactor_options::dump_memory_diagnostics_on_alloc_failure_kind
     seastar::memory_allocator memory_allocator = memory_allocator::seastar;
+
+    /// \cond internal
+    /// Additional memory reserved to OS for each shard (added to the default value or the value specified by \ref reserve_memory).
+    size_t reserve_additional_memory_per_shard = 0;
+    /// \endcond
 public:
     smp_options(program_options::option_group* parent_group);
 };

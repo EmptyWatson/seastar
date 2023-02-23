@@ -23,11 +23,13 @@
 
 #include <seastar/core/future.hh>
 #include <seastar/core/posix.hh>
-#include <vector>
-#include <tuple>
 #include <seastar/core/internal/io_desc.hh>
 #include <seastar/util/bool_class.hh>
 #include <boost/intrusive_ptr.hpp>
+#include <cstdint>
+#include <vector>
+#include <tuple>
+#include <sys/uio.h>
 
 namespace seastar {
 
@@ -110,6 +112,7 @@ public:
     future<size_t> sendmsg(struct msghdr *msg);
     future<size_t> recvmsg(struct msghdr *msg);
     future<size_t> sendto(socket_address addr, const void* buf, size_t len);
+    future<> poll_rdhup();
 
 protected:
     explicit pollable_fd_state(file_desc fd, speculation speculate = speculation())
@@ -188,6 +191,9 @@ public:
     void close() { _s.reset(); }
     explicit operator bool() const noexcept {
         return bool(_s);
+    }
+    future<> poll_rdhup() {
+        return _s->poll_rdhup();
     }
 protected:
     int get_fd() const { return _s->fd.get(); }

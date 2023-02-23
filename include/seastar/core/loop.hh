@@ -22,9 +22,11 @@
 
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <type_traits>
 #include <vector>
 
@@ -549,6 +551,9 @@ public:
 /// \return a \c future<> that resolves when all the function invocations
 ///         complete.  If one or more return an exception, the return value
 ///         contains one of the exceptions.
+/// \note parallel_for_each() schedules all invocations of \c func on the
+///       current shard. If you want to run a function on all shards in parallel,
+///       have a look at \ref smp::invoke_on_all() instead.
 template <typename Iterator, typename Sentinel, typename Func>
 SEASTAR_CONCEPT( requires (requires (Func f, Iterator i) { { f(*i) } -> std::same_as<future<>>; { i++ }; } && (std::same_as<Sentinel, Iterator> || std::sentinel_for<Sentinel, Iterator>)))
 // We use a conjunction with std::same_as<Sentinel, Iterator> because std::sentinel_for requires Sentinel to be semiregular,
@@ -606,6 +611,9 @@ parallel_for_each(Iterator begin, Sentinel end, Func&& func) noexcept {
 ///         was processed.  If one or more of the invocations of
 ///         \c func returned an exceptional future, then the return
 ///         value will contain one of those exceptions.
+/// \note parallel_for_each() schedules all invocations of \c func on the
+///       current shard. If you want to run a function on all shards in parallel,
+///       have a look at \ref smp::invoke_on_all() instead.
 
 namespace internal {
 
@@ -649,8 +657,11 @@ parallel_for_each(Range&& range, Func&& func) noexcept {
 /// \return a \c future<> that resolves when all the function invocations
 ///         complete.  If one or more return an exception, the return value
 ///         contains one of the exceptions.
+/// \note max_concurrent_for_each() schedules all invocations of \c func on the
+///       current shard. If you want to run a function on all shards in parallel,
+///       have a look at \ref smp::invoke_on_all() instead.
 template <typename Iterator, typename Sentinel, typename Func>
-SEASTAR_CONCEPT( requires (requires (Func f, Iterator i) { { f(*i) } -> std::same_as<future<>>; { i++ }; } && (std::same_as<Sentinel, Iterator> || std::sentinel_for<Sentinel, Iterator>) ) )
+SEASTAR_CONCEPT( requires (requires (Func f, Iterator i) { { f(*i) } -> std::same_as<future<>>; { ++i }; } && (std::same_as<Sentinel, Iterator> || std::sentinel_for<Sentinel, Iterator>) ) )
 // We use a conjunction with std::same_as<Sentinel, Iterator> because std::sentinel_for requires Sentinel to be semiregular,
 // which implies that it requires Sentinel to be default-constructible, which is unnecessarily strict in below's context and could
 // break legacy code, for which it holds that Sentinel equals Iterator.
@@ -727,6 +738,9 @@ max_concurrent_for_each(Iterator begin, Sentinel end, size_t max_concurrent, Fun
 /// \return a \c future<> that resolves when all the function invocations
 ///         complete.  If one or more return an exception, the return value
 ///         contains one of the exceptions.
+/// \note max_concurrent_for_each() schedules all invocations of \c func on the
+///       current shard. If you want to run a function on all shards in parallel,
+///       have a look at \ref smp::invoke_on_all() instead.
 template <typename Range, typename Func>
 SEASTAR_CONCEPT( requires requires (Func f, Range r) {
     { f(*std::begin(r)) } -> std::same_as<future<>>;

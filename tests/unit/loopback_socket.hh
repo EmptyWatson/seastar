@@ -54,6 +54,7 @@ private:
     queue<temporary_buffer<char>> _q{1};
     loopback_error_injector* _error_injector;
     type _type;
+    promise<> _shutdown;
 public:
     loopback_buffer(loopback_error_injector* error_injection, type t) : _error_injector(error_injection), _type(t) {}
     future<> push(temporary_buffer<char>&& b) {
@@ -89,8 +90,16 @@ public:
         return _q.pop_eventually();
     }
     void shutdown() noexcept {
+        if (!_aborted) {
+            // it can be called by both -- reader and writer socket impls
+            _shutdown.set_value();
+        }
         _aborted = true;
         _q.abort(std::make_exception_ptr(std::system_error(EPIPE, std::system_category())));
+    }
+
+    future<> wait_input_shutdown() {
+        return _shutdown.get_future();
     }
 };
 
@@ -193,6 +202,9 @@ public:
         // dummy
         return {};
     }
+    future<> wait_input_shutdown() override {
+        return _rx->wait_input_shutdown();
+    }
 };
 
 class loopback_server_socket_impl : public net::server_socket_impl {
@@ -218,18 +230,23 @@ public:
 
 class loopback_connection_factory {
     unsigned _shard = 0;
+    unsigned _shards_count;
     std::vector<lw_shared_ptr<queue<connected_socket>>> _pending;
 public:
-    loopback_connection_factory() {
-        _pending.resize(smp::count);
+    explicit loopback_connection_factory(unsigned shards_count = smp::count)
+            : _shards_count(shards_count)
+    {
+        _pending.resize(shards_count);
     }
     server_socket get_server_socket() {
+       assert(this_shard_id() < _shards_count);
        if (!_pending[this_shard_id()]) {
            _pending[this_shard_id()] = make_lw_shared<queue<connected_socket>>(10);
        }
        return server_socket(std::make_unique<loopback_server_socket_impl>(_pending[this_shard_id()]));
     }
     future<> make_new_server_connection(foreign_ptr<lw_shared_ptr<loopback_buffer>> b1, lw_shared_ptr<loopback_buffer> b2) {
+        assert(this_shard_id() < _shards_count);
         if (!_pending[this_shard_id()]) {
             _pending[this_shard_id()] = make_lw_shared<queue<connected_socket>>(10);
         }
@@ -239,14 +256,17 @@ public:
         return connected_socket(std::make_unique<loopback_connected_socket_impl>(std::move(b2), b1));
     }
     unsigned next_shard() {
-        return _shard++ % smp::count;
+        return _shard++ % _shards_count;
     }
     void destroy_shard(unsigned shard) {
+        assert(shard < _shards_count);
         _pending[shard] = nullptr;
     }
     future<> destroy_all_shards() {
-        return smp::invoke_on_all([this] () {
-            destroy_shard(this_shard_id());
+        return parallel_for_each(boost::irange(0u, _shards_count), [this](shard_id shard) {
+            return smp::submit_to(shard, [this] {
+                destroy_shard(this_shard_id());
+            });
         });
     }
 };

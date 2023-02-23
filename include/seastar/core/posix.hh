@@ -21,28 +21,31 @@
 
 #pragma once
 
-#include <set>
 #include <seastar/core/sstring.hh>
 #include "abort_on_ebadf.hh"
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <unistd.h>
-#include <assert.h>
-#include <utility>
-#include <fcntl.h>
-#include <sys/ioctl.h>
-#include <sys/eventfd.h>
-#include <sys/timerfd.h>
-#include <sys/socket.h>
 #include <sys/epoll.h>
+#include <sys/eventfd.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
-#include <signal.h>
-#include <system_error>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/timerfd.h>
+#include <sys/types.h>
+#include <sys/uio.h>
+#include <assert.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <signal.h>
-#include <memory>
+#include <signal.h>
+#include <spawn.h>
+#include <unistd.h>
+#include <utility>
+#include <system_error>
 #include <chrono>
-#include <sys/uio.h>
+#include <cstring>
+#include <functional>
+#include <memory>
+#include <set>
 
 #include <seastar/net/socket_defs.hh>
 #include <seastar/util/std-compat.hh>
@@ -62,6 +65,9 @@ inline void throw_system_error_on(bool condition, const char* what_arg = "");
 
 template <typename T>
 inline void throw_kernel_error(T r);
+
+template <typename T>
+inline void throw_pthread_error(T r);
 
 struct mmap_deleter {
     size_t _size;
@@ -344,6 +350,15 @@ public:
         return map(size, PROT_READ, MAP_PRIVATE, offset);
     }
 
+    void spawn_actions_add_close(posix_spawn_file_actions_t* actions) {
+        auto r = ::posix_spawn_file_actions_addclose(actions, _fd);
+        throw_pthread_error(r);
+    }
+
+    void spawn_actions_add_dup2(posix_spawn_file_actions_t* actions, int newfd) {
+        auto r = ::posix_spawn_file_actions_adddup2(actions, _fd, newfd);
+        throw_pthread_error(r);
+    }
 private:
     file_desc(int fd) : _fd(fd) {}
  };

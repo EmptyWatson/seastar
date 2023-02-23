@@ -103,6 +103,7 @@ function (seastar_add_test name)
     elseif (parsed_args_KIND STREQUAL "BOOST")
       list (APPEND libraries
         Boost::unit_test_framework
+        Boost::dynamic_linking
         seastar_private)
 
       if (NOT (Seastar_JENKINS STREQUAL ""))
@@ -119,7 +120,9 @@ function (seastar_add_test name)
       PRIVATE ${libraries})
 
     target_compile_definitions (${executable_target}
-      PRIVATE SEASTAR_TESTING_MAIN)
+      PRIVATE
+        SEASTAR_TESTING_MAIN
+        SEASTAR_TESTING_WITH_NETWORKING=$<BOOL:${Seastar_ENABLE_TESTS_ACCESSING_INTERNET}>)
 
     if ((Seastar_STACK_GUARDS STREQUAL "ON") OR
         ((Seastar_STACK_GUARDS STREQUAL "DEFAULT") AND
@@ -139,13 +142,13 @@ function (seastar_add_test name)
         OUTPUT_NAME ${name}_test)
 
     add_dependencies (unit_tests ${executable_target})
-    set (forwarded_args COMMAND ${executable_target} ${args})
+    set (forwarded_args COMMAND ${CMAKE_COMMAND} -E env "${Seastar_TEST_ENVIRONMENT}" $<TARGET_FILE:${executable_target}> ${args})
   else ()
     if (NOT (parsed_args_KIND STREQUAL "CUSTOM"))
       message (FATAL_ERROR "SOURCES are required for ${parsed_args_KIND} tests")
     endif ()
 
-    set (forwarded_args COMMAND ${parsed_args_RUN_ARGS})
+    set (forwarded_args COMMAND ${CMAKE_COMMAND} -E env "${Seastar_TEST_ENVIRONMENT}" ${parsed_args_RUN_ARGS})
   endif ()
 
   #
@@ -172,8 +175,7 @@ function (seastar_add_test name)
 
   set_tests_properties (Seastar.unit.${name}
     PROPERTIES
-      TIMEOUT ${Seastar_TEST_TIMEOUT}
-      ENVIRONMENT "${Seastar_TEST_ENVIRONMENT}")
+      TIMEOUT ${Seastar_TEST_TIMEOUT})
 endfunction ()
 
 #
@@ -248,15 +250,18 @@ seastar_add_test (checked_ptr
   SOURCES checked_ptr_test.cc)
 
 seastar_add_test (chunked_fifo
+  KIND BOOST
   SOURCES chunked_fifo_test.cc)
 
 seastar_add_test (chunk_parsers
   SOURCES chunk_parsers_test.cc)
 
 seastar_add_test (circular_buffer
+  KIND BOOST
   SOURCES circular_buffer_test.cc)
 
 seastar_add_test (circular_buffer_fixed_capacity
+  KIND BOOST
   SOURCES circular_buffer_fixed_capacity_test.cc)
 
 seastar_add_test (condition_variable
@@ -272,9 +277,11 @@ seastar_add_test (coroutines
   SOURCES coroutines_test.cc)
 
 seastar_add_test (defer
+  KIND BOOST
   SOURCES defer_test.cc)
 
 seastar_add_test (deleter
+  KIND BOOST
   SOURCES deleter_test.cc)
 
 seastar_add_app_test (directory
@@ -508,7 +515,7 @@ function(seastar_add_certgen name)
   find_program(OPENSSL openssl)
 
   add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${CERT_PRIVKEY}"
-    COMMAND ${OPENSSL} genpkey -out ${CERT_PRIVKEY} -algorithm ${CERT_ALG} ${CERT_ALG_OPTS}
+    COMMAND ${OPENSSL} genpkey -quiet -out ${CERT_PRIVKEY} -algorithm ${CERT_ALG} ${CERT_ALG_OPTS}
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
   )
   add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${CERT_REQ}"
@@ -518,7 +525,7 @@ function(seastar_add_certgen name)
   )
 
   add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${CERT_CAPRIVKEY}"
-    COMMAND ${OPENSSL} genpkey -out ${CERT_CAPRIVKEY} -algorithm ${CERT_ALG} ${CERT_ALG_OPTS}
+    COMMAND ${OPENSSL} genpkey -quiet -out ${CERT_CAPRIVKEY} -algorithm ${CERT_ALG} ${CERT_ALG_OPTS}
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
   )
   add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${CERT_CAROOT}"
@@ -542,6 +549,7 @@ function(seastar_gen_mtls_certs)
   find_program(OPENSSL openssl)
 
   set(SUBJECT "/C=GB/ST=London/L=London/O=Redpanda Data/OU=Core/CN=redpanda.com")
+  set(EXTENSION "subjectAltName = IP:127.0.0.1")
   set(CLIENT1_SUBJECT "/C=GB/ST=London/L=London/O=Redpanda Data/OU=Core/CN=client1.org")
   set(CLIENT2_SUBJECT "/C=GB/ST=London/L=London/O=Redpanda Data/OU=Core/CN=client2.org")
 
@@ -550,7 +558,7 @@ function(seastar_gen_mtls_certs)
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
   )
   add_custom_command(OUTPUT mtls_ca.crt
-    COMMAND ${OPENSSL} req -new -x509 -sha256 -key mtls_ca.key -out mtls_ca.crt -subj ${SUBJECT}
+    COMMAND ${OPENSSL} req -new -x509 -sha256 -key mtls_ca.key -out mtls_ca.crt -subj ${SUBJECT} -addext ${EXTENSION}
     DEPENDS mtls_ca.key
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
   )
@@ -632,8 +640,16 @@ add_custom_target(tls_files
   DEPENDS ${out_tls_certificate_files}
 )
 
+add_custom_command (
+  DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/https-server.py
+  OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/https-server.py
+  COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/https-server.py ${CMAKE_CURRENT_BINARY_DIR})
+
+add_custom_target (https_server
+  DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/https-server.py)
+
 seastar_add_test (tls
-  DEPENDS tls_files testcrt othercrt mtls_certs
+  DEPENDS tls_files testcrt othercrt mtls_certs https_server
   SOURCES tls_test.cc
   LIBRARIES Boost::filesystem
   WORKING_DIRECTORY ${Seastar_BINARY_DIR})
@@ -665,3 +681,6 @@ seastar_add_test (closeable
 
 seastar_add_test (pipe
   SOURCES pipe_test.cc)
+
+seastar_add_test (spawn
+  SOURCES spawn_test.cc)

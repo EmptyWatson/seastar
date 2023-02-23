@@ -20,7 +20,7 @@
 # Copyright (C) 2018 Scylladb, Ltd.
 #
 
-cmake_minimum_required (VERSION 3.5)
+cmake_minimum_required (VERSION 3.13)
 
 list (APPEND CMAKE_MODULE_PATH
   ${CMAKE_CURRENT_SOURCE_DIR}/cmake
@@ -39,6 +39,11 @@ set (Seastar_DPDK_MACHINE
 project (Seastar
   VERSION 1.0
   LANGUAGES CXX)
+
+cmake_policy (SET CMP0090 NEW)
+if (POLICY CMP0135)
+  cmake_policy (SET CMP0135 NEW)
+endif ()
 
 # generic boolean values passed as string, potentially from configure.py
 set (True_STRING_VALUES "ON" "yes" "Yes" "YES" "true" "True" "TRUE")
@@ -199,9 +204,17 @@ function (set_option_if_package_is_found option_name package_name)
   endif ()
 endfunction ()
 
+# When Seastar is a top-level project, enable the non-library targets by default.
+# If it is embedded with `add_subdirectory`, disable them.
+if (CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
+  set (Seastar_MASTER_PROJECT ON)
+else ()
+  set (Seastar_MASTER_PROJECT OFF)
+endif ()
+
 option (Seastar_APPS
   "Enable application targets."
-  ON)
+  ${Seastar_MASTER_PROJECT})
 
 set (Seastar_CXX_FLAGS
   ""
@@ -211,11 +224,11 @@ set (Seastar_CXX_FLAGS
 
 option (Seastar_DEMOS
   "Enable demonstration targets."
-  ON)
+  ${Seastar_MASTER_PROJECT})
 
 option (Seastar_DOCS
   "Enable documentation targets."
-  ON)
+  ${Seastar_MASTER_PROJECT})
 
 option (Seastar_DPDK
   "Enable DPDK support."
@@ -261,7 +274,7 @@ set (Seastar_LD_FLAGS
 
 option (Seastar_INSTALL
   "Install targets."
-  ON)
+  ${Seastar_MASTER_PROJECT})
 
 option (Seastar_NUMA
   "Enable NUMA support."
@@ -269,7 +282,12 @@ option (Seastar_NUMA
 
 option (Seastar_TESTING
   "Enable testing targets."
-  ON)
+  ${Seastar_MASTER_PROJECT})
+
+include (CMakeDependentOption)
+cmake_dependent_option (Seastar_ENABLE_TESTS_ACCESSING_INTERNET
+  "Enable tests accessing internet." ON
+  "Seastar_TESTING" OFF)
 
 option (Seastar_COMPRESS_DEBUG
   "Compress debug info."
@@ -293,11 +311,25 @@ set (Seastar_TEST_TIMEOUT
   STRING
   "Maximum allowed time for a test to run, in seconds.")
 
+option (BUILD_SHARED_LIBS
+  "Build seastar library as shared libraries instead of static"
+  OFF)
 # We set the following environment variables
-# * ASAN_OPTIONS=disable_coredump=0:abort_on_error=1:detect_stack_use_after_return=1
+# * ASAN_OPTIONS=disable_coredump=0:abort_on_error=1:detect_stack_use_after_return=1:verify_asan_link_order=0
 #   By default asan disables core dumps because they used to be
 #   huge. This is no longer the case since the shadow memory is
 #   excluded, so it is safe to enable them.
+#   Also, by default, to make sure it works as expected, asan
+#   verifies if the asan dynamic runtime is the first DSO in the
+#   initial library list by calling dl_iterate_phdr(3). But
+#   Seastar provides this symbol, and its implementation references
+#   some static variables. So if Seastar is built as a shared
+#   library, this causes a chicken and egg problem. In other words,
+#   ASan is loaded first, and it tries to reference a symbol which
+#   is in turn provided by another shared library which is not
+#   necessariy ready its static variables yet. And this leads leads
+#   to a segfault. So, we have to disable this check when
+#   "BUILD_SHARED_LIBS" is enabled.
 # * UBSAN_OPTIONS=halt_on_error=1:abort_on_error=1
 #   Fail the test if any undefined behavior is found and use abort
 #   instead of exit. Using abort is what causes core dumps to be
@@ -305,17 +337,20 @@ set (Seastar_TEST_TIMEOUT
 # * BOOST_TEST_CATCH_SYSTEM_ERRORS=no
 #   Normally the boost test library handles SIGABRT and prevents core
 #   dumps from being produced.
-
 # This works great with clang and gcc 10.2, but unfortunately not any
 # previous gcc.
-set (Seastar_USE_AFTER_RETURN "")
+set (Seastar_ASAN_OPTIONS "disable_coredump=0:abort_on_error=1")
 if ((NOT (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")) OR
     (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 10.2))
-  set (Seastar_USE_AFTER_RETURN ":detect_stack_use_after_return=1")
+  string (APPEND Seastar_ASAN_OPTIONS ":detect_stack_use_after_return=1")
+endif ()
+if (BUILD_SHARED_LIBS)
+  string (APPEND Seastar_ASAN_OPTIONS ":verify_asan_link_order=0")
 endif ()
 
+
 set (Seastar_TEST_ENVIRONMENT
-  "ASAN_OPTIONS=disable_coredump=0:abort_on_error=1${Seastar_USE_AFTER_RETURN};UBSAN_OPTIONS=halt_on_error=1:abort_on_error=1;BOOST_TEST_CATCH_SYSTEM_ERRORS=no"
+  "ASAN_OPTIONS=${Seastar_ASAN_OPTIONS};UBSAN_OPTIONS=halt_on_error=1:abort_on_error=1;BOOST_TEST_CATCH_SYSTEM_ERRORS=no"
   CACHE
   STRING
   "Environment variables for running tests")
@@ -341,15 +376,6 @@ set (Seastar_DEBUG_SHARED_PTR
   CACHE
   STRING
   "Enable shared_ptr debugging. Can be ON, OFF or DEFAULT (which enables it for Debug and Sanitize)")
-
-# When Seastar is embedded with `add_subdirectory`, disable the non-library targets.
-if (NOT (CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR))
-  set (Seastar_APPS OFF)
-  set (Seastar_DEMOS OFF)
-  set (Seastar_DOCS OFF)
-  set (Seastar_INSTALL OFF)
-  set (Seastar_TESTING OFF)
-endif ()
 
 #
 # Useful (non-cache) variables.
@@ -444,7 +470,7 @@ if (Seastar_DPDK)
   set (seastar_dpdk_obj seastar-dpdk.o)
 endif ()
 
-add_library (seastar STATIC
+add_library (seastar
   ${http_chunk_parsers_file}
   ${http_request_parser_file}
   ${seastar_dpdk_obj}
@@ -557,6 +583,7 @@ add_library (seastar STATIC
   include/seastar/http/routes.hh
   include/seastar/http/short_streams.hh
   include/seastar/http/transformers.hh
+  include/seastar/http/client.hh
   include/seastar/json/formatter.hh
   include/seastar/json/json_elements.hh
   include/seastar/net/api.hh
@@ -602,7 +629,6 @@ add_library (seastar STATIC
   include/seastar/util/defer.hh
   include/seastar/util/eclipse.hh
   include/seastar/util/function_input_iterator.hh
-  include/seastar/util/gcc6-concepts.hh
   include/seastar/util/indirect.hh
   include/seastar/util/is_smart_ptr.hh
   include/seastar/util/lazy.hh
@@ -612,6 +638,7 @@ add_library (seastar STATIC
   include/seastar/util/noncopyable_function.hh
   include/seastar/util/optimized_optional.hh
   include/seastar/util/print_safe.hh
+  include/seastar/util/process.hh
   include/seastar/util/program-options.hh
   include/seastar/util/read_first_line.hh
   include/seastar/util/reference_wrapper.hh
@@ -670,6 +697,9 @@ add_library (seastar STATIC
   src/http/reply.cc
   src/http/routes.cc
   src/http/transformers.cc
+  src/http/url.cc
+  src/http/client.cc
+  src/http/request.cc
   src/json/formatter.cc
   src/json/json_elements.cc
   src/net/arp.cc
@@ -703,6 +733,7 @@ add_library (seastar STATIC
   src/util/exceptions.cc
   src/util/file.cc
   src/util/log.cc
+  src/util/process.cc
   src/util/program-options.cc
   src/util/read_first_line.cc
   src/util/tmp_file.cc
@@ -723,16 +754,17 @@ target_include_directories (seastar
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${Seastar_GEN_BINARY_DIR}/include>
   PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${Seastar_GEN_BINARY_DIR}/src)
+    ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 set (Seastar_PRIVATE_CXX_FLAGS
-  -fvisibility=hidden
   -UNDEBUG
   -Wall
   -Werror
   -Wno-array-bounds # Disabled because of https://gcc.gnu.org/bugzilla/show_bug.cgi?id=93437
   -Wno-error=deprecated-declarations)
+if (NOT BUILD_SHARED_LIBS)
+  list (APPEND Seastar_PRIVATE_CXX_FLAGS -fvisibility=hidden)
+endif ()
 
 if (Seastar_COMPRESS_DEBUG)
   # -gz doesn't imply -g, so it is safe to add it regardless of debug
@@ -797,7 +829,8 @@ target_compile_options (seastar
 
 target_compile_definitions(seastar
   PUBLIC
-  SEASTAR_API_LEVEL=${Seastar_API_LEVEL})
+  SEASTAR_API_LEVEL=${Seastar_API_LEVEL}
+  $<$<BOOL:${BUILD_SHARED_LIBS}>:SEASTAR_BUILD_SHARED_LIBS>)
 
 target_compile_features(seastar
   PUBLIC
@@ -881,6 +914,10 @@ if (Seastar_HEAP_PROFILING)
       SOURCE "src/core/memory.cc"
       PROPERTY
       COMPILE_DEFINITIONS SEASTAR_HEAPPROF)
+    set_property (
+      SOURCE "src/core/reactor.cc"
+      PROPERTY
+      COMPILE_DEFINITIONS SEASTAR_HEAPPROF)
 endif ()
 
 if (Seastar_DEFERRED_ACTION_REQUIRE_NOEXCEPT)
@@ -938,8 +975,7 @@ if (Seastar_IO_URING)
 endif ()
 
 if (Seastar_LD_FLAGS)
-  # In newer versions of CMake, there is `target_link_options`.
-  target_link_libraries (seastar
+  target_link_options (seastar
     PRIVATE ${Seastar_LD_FLAGS})
 endif ()
 
@@ -1054,7 +1090,6 @@ if (Seastar_INSTALL OR Seastar_TESTING)
   add_library (Seastar::seastar_testing ALIAS seastar_testing)
 
   target_compile_definitions (seastar_testing
-    PUBLIC BOOST_TEST_DYN_LINK
     PRIVATE ${Seastar_PRIVATE_COMPILE_DEFINITIONS})
 
   target_compile_options (seastar_testing
@@ -1063,6 +1098,7 @@ if (Seastar_INSTALL OR Seastar_TESTING)
   target_link_libraries (seastar_testing
     PUBLIC
       Boost::unit_test_framework
+      Boost::dynamic_linking
       seastar)
 
   add_library(seastar_perf_testing
@@ -1131,6 +1167,20 @@ if (Seastar_APPS)
   endif ()
 
   add_subdirectory (apps ${exclude})
+endif ()
+
+if (CMAKE_BUILD_TYPE STREQUAL "Dev")
+  include (CheckHeaders)
+  add_custom_target (checkheaders)
+  foreach (lib seastar seastar_testing seastar_perf_testing)
+    if (TARGET ${lib})
+      seastar_check_self_contained (${lib}
+        INCLUDE "\\.hh$"
+        # impl.hh headers are internal implementations of .hh, so they are not
+        # compilable. let's exclude them from the files to be checked.
+        EXCLUDE "_impl.hh$|-impl.hh$")
+    endif ()
+  endforeach ()
 endif ()
 
 #
@@ -1242,7 +1292,6 @@ if (Seastar_INSTALL)
 
   install (
     FILES
-      ${CMAKE_CURRENT_SOURCE_DIR}/cmake/FindConcepts.cmake
       ${CMAKE_CURRENT_SOURCE_DIR}/cmake/FindGnuTLS.cmake
       ${CMAKE_CURRENT_SOURCE_DIR}/cmake/FindLinuxMembarrier.cmake
       ${CMAKE_CURRENT_SOURCE_DIR}/cmake/FindSanitizers.cmake

@@ -21,6 +21,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <memory>
 #include <vector>
 #include <cstring>
@@ -28,11 +29,11 @@
 #include <seastar/net/byteorder.hh>
 #include <seastar/net/socket_defs.hh>
 #include <seastar/net/packet.hh>
+#include <seastar/core/internal/api-level.hh>
 #include <seastar/core/temporary_buffer.hh>
 #include <seastar/core/iostream.hh>
 #include <seastar/util/std-compat.hh>
 #include <seastar/util/program-options.hh>
-#include "../core/internal/api-level.hh"
 #include <sys/types.h>
 
 namespace seastar {
@@ -243,6 +244,19 @@ public:
     explicit operator bool() const noexcept {
         return static_cast<bool>(_csi);
     }
+    /// Waits for the peer of this socket to disconnect
+    ///
+    /// \return future that resolves when the peer closes connection or shuts it down
+    /// for writing or when local socket is called \ref shutdown_input().
+    ///
+    /// Note, that when the returned future is resolved for whatever reason socket
+    /// may still be readable from, so the caller may want to wait for both events
+    /// -- this one and EOF from read.
+    ///
+    /// Calling it several times per socket is not allowed (undefined behavior)
+    ///
+    /// \see poll(2) about POLLRDHUP for more details
+    future<> wait_input_shutdown();
 };
 /// @}
 

@@ -23,6 +23,10 @@
 
 #include <stdint.h>
 #include <algorithm>
+#include <cassert>
+#if __has_include(<compare>)
+#include <compare>
+#endif
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -32,9 +36,9 @@
 #include <istream>
 #include <ostream>
 #include <functional>
-#include <cstdio>
 #include <type_traits>
 #include <fmt/ostream.h>
+#include <seastar/util/concepts.hh>
 #include <seastar/util/std-compat.hh>
 #include <seastar/core/temporary_buffer.hh>
 
@@ -44,6 +48,10 @@ template <typename char_type, typename Size, Size max_size, bool NulTerminate = 
 class basic_sstring;
 
 #ifdef SEASTAR_SSTRING
+// Older std::string used atomic reference counting and had no small-buffer-optimization.
+// At some point the new std::string ABI improved -- no reference counting plus the small
+// buffer optimization. However, aliasing seastar::sstring to std::string still ends up
+// with a small performance degradation. (FIXME?)
 using sstring = basic_sstring<char, uint32_t, 15>;
 #else
 using sstring = std::string;
@@ -318,6 +326,22 @@ public:
     }
 
     /**
+     *  Resize string and use the specified @c op to modify the content and the length
+     *  @param n  new size
+     *  @param op the function object used for setting the new content of the string
+     */
+    template <class Operation>
+    SEASTAR_CONCEPT( requires std::is_invocable_r<size_t, Operation, char_type*, size_t>::value )
+    void resize_and_overwrite(size_t n, Operation op) {
+        if (n > size()) {
+            *this = basic_sstring(initialized_later(), n);
+        }
+        size_t r = std::move(op)(data(), n);
+        assert(r <= n);
+        resize(r);
+    }
+
+    /**
      *  Resize string.
      *  @param n  new size.
      *  @param c  if n greater than current size character to fill newly allocated space with.
@@ -553,9 +577,15 @@ public:
     bool operator!=(const basic_sstring& x) const noexcept {
         return !operator==(x);
     }
+#if __cpp_lib_three_way_comparison
+    constexpr std::strong_ordering operator<=>(const auto& x) const noexcept {
+        return compare(x) <=> 0;
+    }
+#else
     bool operator<(const basic_sstring& x) const noexcept {
         return compare(x) < 0;
     }
+#endif
     basic_sstring operator+(const basic_sstring& x) const {
         basic_sstring ret(initialized_later(), size() + x.size());
         std::copy(begin(), end(), ret.begin());
@@ -588,18 +618,25 @@ public:
 template <typename char_type, typename Size, Size max_size, bool NulTerminate>
 constexpr Size basic_sstring<char_type, Size, max_size, NulTerminate>::npos;
 
-template <typename string_type = sstring>
-string_type uninitialized_string(size_t size) {
-    string_type ret;
-    // FIXME: use __resize_default_init if available
-    ret.resize(size);
-    return ret;
+namespace internal {
+template <class T> struct is_sstring : std::false_type {};
+template <typename char_type, typename Size, Size max_size, bool NulTerminate>
+struct is_sstring<basic_sstring<char_type, Size, max_size, NulTerminate>> : std::true_type {};
 }
 
-template <typename char_type, typename Size, Size max_size, bool NulTerminate>
-basic_sstring<char_type, Size, max_size, NulTerminate> uninitialized_string(size_t size) {
-    using sstring_type = basic_sstring<char_type, Size, max_size, NulTerminate>;
-    return sstring_type(sstring_type::initialized_later(), size);
+template <typename string_type = sstring>
+string_type uninitialized_string(size_t size) {
+    if constexpr (internal::is_sstring<string_type>::value) {
+        return string_type(typename string_type::initialized_later(), size);
+    } else {
+        string_type ret;
+#ifdef __cpp_lib_string_resize_and_overwrite
+        ret.resize_and_overwrite(size, [](string_type::value_type*, string_type::size_type n) { return n; });
+#else
+        ret.resize(size);
+#endif
+        return ret;
+    }
 }
 
 template <typename char_type, typename size_type, size_type Max, size_type N, bool NulTerminate>
@@ -614,15 +651,10 @@ operator+(const char(&s)[N], const basic_sstring<char_type, size_type, Max, NulT
     return ret;
 }
 
+template <typename T>
 static inline
-size_t str_len() {
-    return 0;
-}
-
-template <typename First, typename... Tail>
-static inline
-size_t str_len(const First& first, const Tail&... tail) {
-    return std::string_view(first).size() + str_len(tail...);
+size_t constexpr str_len(const T& s) {
+    return std::string_view(s).size();
 }
 
 template <typename char_type, typename size_type, size_type max_size>
@@ -667,86 +699,29 @@ struct hash<seastar::basic_sstring<char_type, size_type, max_size, NulTerminate>
 
 namespace seastar {
 
+template <typename T>
 static inline
-char* copy_str_to(char* dst) {
-    return dst;
-}
-
-template <typename Head, typename... Tail>
-static inline
-char* copy_str_to(char* dst, const Head& head, const Tail&... tail) {
-    std::string_view v(head);
-    return copy_str_to(std::copy(v.begin(), v.end(), dst), tail...);
+void copy_str_to(char*& dst, const T& s) {
+    std::string_view v(s);
+    dst = std::copy(v.begin(), v.end(), dst);
 }
 
 template <typename String = sstring, typename... Args>
 static String make_sstring(Args&&... args)
 {
-    String ret = uninitialized_string<String>(str_len(args...));
-    copy_str_to(ret.data(), args...);
+    String ret = uninitialized_string<String>((str_len(args) + ...));
+    auto dst = ret.data();
+    (copy_str_to(dst, args), ...);
     return ret;
 }
 
 namespace internal {
 template <typename string_type, typename T>
-string_type to_sstring_sprintf(T value, const char* fmt) {
-    char tmp[sizeof(value) * 3 + 2];
-    auto len = std::sprintf(tmp, fmt, value);
-    using ch_type = typename string_type::value_type;
-#pragma GCC diagnostic push
-    // GCC warns that the following line may read more than the size tmp,
-    // not realizing that the size of tmp was calculated as the maximum
-    // possible value of "len" (for the types and formats we use it for).
-#pragma GCC diagnostic ignored "-Wpragmas"
-#pragma GCC diagnostic ignored "-Wunknown-warning-option"
-#pragma GCC diagnostic ignored "-Wstringop-overread"
-    return string_type(reinterpret_cast<ch_type*>(tmp), len);
-#pragma GCC diagnostic pop
-}
-
-template <typename string_type>
-string_type to_sstring(int value) {
-    return to_sstring_sprintf<string_type>(value, "%d");
-}
-
-template <typename string_type>
-string_type to_sstring(unsigned value) {
-    return to_sstring_sprintf<string_type>(value, "%u");
-}
-
-template <typename string_type>
-string_type to_sstring(long value) {
-    return to_sstring_sprintf<string_type>(value, "%ld");
-}
-
-template <typename string_type>
-string_type to_sstring(unsigned long value) {
-    return to_sstring_sprintf<string_type>(value, "%lu");
-}
-
-template <typename string_type>
-string_type to_sstring(long long value) {
-    return to_sstring_sprintf<string_type>(value, "%lld");
-}
-
-template <typename string_type>
-string_type to_sstring(unsigned long long value) {
-    return to_sstring_sprintf<string_type>(value, "%llu");
-}
-
-template <typename string_type>
-string_type to_sstring(float value) {
-    return to_sstring_sprintf<string_type>(value, "%g");
-}
-
-template <typename string_type>
-string_type to_sstring(double value) {
-    return to_sstring_sprintf<string_type>(value, "%g");
-}
-
-template <typename string_type>
-string_type to_sstring(long double value) {
-    return to_sstring_sprintf<string_type>(value, "%Lg");
+string_type to_sstring(T value) {
+    auto size = fmt::formatted_size("{}", value);
+    auto formatted = uninitialized_string<string_type>(size);
+    fmt::format_to(formatted.data(), "{}", value);
+    return formatted;
 }
 
 template <typename string_type>
@@ -799,7 +774,7 @@ std::ostream& operator<<(std::ostream& os, const std::unordered_map<Key, T, Hash
         } else {
             first = false;
         }
-        os << "{ " << elem.first << " -> " << elem.second << "}";
+        os << "{" << elem.first << " -> " << elem.second << "}";
     }
     os << "}";
     return os;

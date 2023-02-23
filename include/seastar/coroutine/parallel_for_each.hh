@@ -30,13 +30,13 @@
 
 namespace seastar::coroutine {
 
-/// Invoke a function on all elements in a range in paralell and wait for all futures to complete in a coroutine.
+/// Invoke a function on all elements in a range in parallel and wait for all futures to complete in a coroutine.
 ///
 /// `parallel_for_each` can be used to launch a function concurrently
 /// on all elements in a given range and wait for all of them to complete.
 /// Waiting is performend by `co_await` and returns a future.
 ///
-/// If one or more of the function invocations resolves to an exception
+/// If one or more of the function invocations resolve to an exception
 /// then the one of the exceptions is re-thrown.
 /// All of the futures are waited for, even in the case of exceptions.
 ///
@@ -53,10 +53,14 @@ namespace seastar::coroutine {
 /// ```
 ///
 /// Safe for use with lambda coroutines.
+///
+/// \note parallel_for_each() schedules all invocations of \c func on the
+///       current shard. If you want to run a function on all shards in parallel,
+///       have a look at \ref smp::invoke_on_all() instead.
 template <typename Func>
 // constaints for Func are defined at the parallel_for_each constructor
 class [[nodiscard("must co_await an parallel_for_each() object")]] parallel_for_each final : continuation_base<> {
-    using coroutine_handle_t = SEASTAR_INTERNAL_COROUTINE_NAMESPACE::coroutine_handle<void>;
+    using coroutine_handle_t = std::coroutine_handle<void>;
 
     Func _func;
     boost::container::small_vector<future<>, 5> _futures;
@@ -147,7 +151,7 @@ public:
     }
 
     template<typename T>
-    void await_suspend(SEASTAR_INTERNAL_COROUTINE_NAMESPACE::coroutine_handle<T> h) {
+    void await_suspend(std::coroutine_handle<T> h) {
         _when_ready = h;
         _waiting_task = &h.promise();
         resume_or_set_callback();

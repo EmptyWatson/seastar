@@ -38,11 +38,11 @@
 #include <seastar/net/stack.hh>
 #include <seastar/util/std-compat.hh>
 #include <seastar/util/variant_utils.hh>
+#include <seastar/core/fsnotify.hh>
 
 #include <boost/range/iterator_range.hpp>
 #include <boost/range/adaptor/map.hpp>
 
-#include "../core/fsnotify.hh"
 
 namespace seastar {
 
@@ -776,6 +776,8 @@ public:
             _timer.cancel();
         }
     private:
+        using fsnotifier = experimental::fsnotifier;
+
         // called from seastar::thread
         void rebuild(const std::vector<fsnotifier::event>& events) {
             for (auto& e : events) {
@@ -1646,6 +1648,9 @@ public:
     }
     future<std::optional<session_dn>> get_distinguished_name() {
         return _session->get_distinguished_name();
+    }
+    future<> wait_input_shutdown() override {
+        return _session->socket().wait_input_shutdown();
     }
 };
 

@@ -21,18 +21,19 @@
 #include "core/reactor_backend.hh"
 #include "core/thread_pool.hh"
 #include "core/syscall_result.hh"
-#include "uname.hh"
+#include <seastar/core/internal/buffer_allocator.hh>
+#include <seastar/util/internal/iovec_utils.hh>
+#include <seastar/core/internal/uname.hh>
 #include <seastar/core/print.hh>
 #include <seastar/core/reactor.hh>
-#include <seastar/core/internal/buffer_allocator.hh>
 #include <seastar/util/defer.hh>
-#include <seastar/util/internal/iovec_utils.hh>
 #include <seastar/util/read_first_line.hh>
 
 #include <chrono>
 #include <filesystem>
 #include <sys/poll.h>
 #include <sys/syscall.h>
+#include <sys/resource.h>
 
 #ifdef SEASTAR_HAVE_URING
 #include <liburing.h>
@@ -60,27 +61,35 @@ public:
     }
 };
 
-void prepare_iocb(io_request& req, io_completion* desc, iocb& iocb) {
+void prepare_iocb(const io_request& req, io_completion* desc, iocb& iocb) {
     switch (req.opcode()) {
     case io_request::operation::fdatasync:
-        iocb = make_fdsync_iocb(req.fd());
+        iocb = make_fdsync_iocb(req.as<io_request::operation::fdatasync>().fd);
         break;
-    case io_request::operation::write:
-        iocb = make_write_iocb(req.fd(), req.pos(), req.address(), req.size());
-        set_nowait(iocb, req.nowait_works());
+    case io_request::operation::write: {
+        const auto& op = req.as<io_request::operation::write>();
+        iocb = make_write_iocb(op.fd, op.pos, op.addr, op.size);
+        set_nowait(iocb, op.nowait_works);
         break;
-    case io_request::operation::writev:
-        iocb = make_writev_iocb(req.fd(), req.pos(), req.iov(), req.size());
-        set_nowait(iocb, req.nowait_works());
+    }
+    case io_request::operation::writev: {
+        const auto& op = req.as<io_request::operation::writev>();
+        iocb = make_writev_iocb(op.fd, op.pos, op.iovec, op.iov_len);
+        set_nowait(iocb, op.nowait_works);
         break;
-    case io_request::operation::read:
-        iocb = make_read_iocb(req.fd(), req.pos(), req.address(), req.size());
-        set_nowait(iocb, req.nowait_works());
+    }
+    case io_request::operation::read: {
+        const auto& op = req.as<io_request::operation::read>();
+        iocb = make_read_iocb(op.fd, op.pos, op.addr, op.size);
+        set_nowait(iocb, op.nowait_works);
         break;
-    case io_request::operation::readv:
-        iocb = make_readv_iocb(req.fd(), req.pos(), req.iov(), req.size());
-        set_nowait(iocb, req.nowait_works());
+    }
+    case io_request::operation::readv: {
+        const auto& op = req.as<io_request::operation::readv>();
+        iocb = make_readv_iocb(op.fd, op.pos, op.iovec, op.iov_len);
+        set_nowait(iocb, op.nowait_works);
         break;
+    }
     default:
         seastar_logger.error("Invalid operation for iocb: {}", req.opname());
         std::abort();
@@ -169,8 +178,8 @@ bool
 aio_storage_context::submit_work() {
     bool did_work = false;
 
-    _submission_queue.resize(0);
-    size_t to_submit = _r._io_sink.drain([this] (internal::io_request& req, io_completion* desc) -> bool {
+    _submission_queue.clear();
+    size_t to_submit = _r._io_sink.drain([this] (const internal::io_request& req, io_completion* desc) -> bool {
         if (!_iocb_pool.has_capacity()) {
             return false;
         }
@@ -186,7 +195,7 @@ aio_storage_context::submit_work() {
     });
 
     if (__builtin_expect(_r._kernel_page_cache, false)) {
-        // linux-aio is not asynchrous when the page cache is used,
+        // linux-aio is not asynchronous when the page cache is used,
         // so we don't want to call io_submit() from the reactor thread.
         //
         // Pretend that all aio failed with EAGAIN and submit them
@@ -199,19 +208,16 @@ aio_storage_context::submit_work() {
         to_submit = 0;
     }
 
-    size_t submitted = 0;
-    while (to_submit > submitted) {
-        auto nr = to_submit - submitted;
-        auto iocbs = _submission_queue.data() + submitted;
+    size_t nr_consumed = 0;
+    for (auto iocbs = _submission_queue.data(), end = iocbs + to_submit; iocbs < end; iocbs += nr_consumed) {
+        auto nr = end - iocbs;
         auto r = io_submit(_io_context, nr, iocbs);
-        size_t nr_consumed;
         if (r == -1) {
             nr_consumed = handle_aio_error(iocbs[0], errno);
         } else {
             nr_consumed = size_t(r);
         }
         did_work = true;
-        submitted += nr_consumed;
     }
 
     if (need_to_retry() && !retry_in_progress()) {
@@ -542,18 +548,27 @@ class aio_pollable_fd_state : public pollable_fd_state {
 
     internal::linux_abi::iocb _iocb_pollout;
     pollable_fd_state_completion _completion_pollout;
+
+    internal::linux_abi::iocb _iocb_pollrdhup;
+    pollable_fd_state_completion _completion_pollrdhup;
 public:
     pollable_fd_state_completion* get_desc(int events) {
         if (events & POLLIN) {
             return &_completion_pollin;
         }
-        return &_completion_pollout;
+        if (events & POLLOUT) {
+            return &_completion_pollout;
+        }
+        return &_completion_pollrdhup;
     }
     internal::linux_abi::iocb* get_iocb(int events) {
         if (events & POLLIN) {
             return &_iocb_pollin;
         }
-        return &_iocb_pollout;
+        if (events & POLLOUT) {
+            return &_iocb_pollout;
+        }
+        return &_iocb_pollrdhup;
     }
     explicit aio_pollable_fd_state(file_desc fd, speculation speculate)
         : pollable_fd_state(std::move(fd), std::move(speculate))
@@ -597,6 +612,10 @@ future<> reactor_backend_aio::readable_or_writeable(pollable_fd_state& fd) {
     return poll(fd, POLLIN|POLLOUT);
 }
 
+future<> reactor_backend_aio::poll_rdhup(pollable_fd_state& fd) {
+    return poll(fd, POLLRDHUP);
+}
+
 void reactor_backend_aio::forget(pollable_fd_state& fd) noexcept {
     auto* pfd = static_cast<aio_pollable_fd_state*>(&fd);
     delete pfd;
@@ -617,13 +636,13 @@ void reactor_backend_aio::shutdown(pollable_fd_state& fd, int how) {
 }
 
 future<size_t>
-reactor_backend_aio::read_some(pollable_fd_state& fd, void* buffer, size_t len) {
-    return _r.do_read_some(fd, buffer, len);
+reactor_backend_aio::read(pollable_fd_state& fd, void* buffer, size_t len) {
+    return _r.do_read(fd, buffer, len);
 }
 
 future<size_t>
-reactor_backend_aio::read_some(pollable_fd_state& fd, const std::vector<iovec>& iov) {
-    return _r.do_read_some(fd, iov);
+reactor_backend_aio::recvmsg(pollable_fd_state& fd, const std::vector<iovec>& iov) {
+    return _r.do_recvmsg(fd, iov);
 }
 
 future<temporary_buffer<char>>
@@ -632,13 +651,13 @@ reactor_backend_aio::read_some(pollable_fd_state& fd, internal::buffer_allocator
 }
 
 future<size_t>
-reactor_backend_aio::write_some(pollable_fd_state& fd, const void* buffer, size_t len) {
-    return _r.do_write_some(fd, buffer, len);
+reactor_backend_aio::send(pollable_fd_state& fd, const void* buffer, size_t len) {
+    return _r.do_send(fd, buffer, len);
 }
 
 future<size_t>
-reactor_backend_aio::write_some(pollable_fd_state& fd, net::packet& p) {
-    return _r.do_write_some(fd, p);
+reactor_backend_aio::sendmsg(pollable_fd_state& fd, net::packet& p) {
+    return _r.do_sendmsg(fd, p);
 }
 
 future<temporary_buffer<char>>
@@ -826,8 +845,9 @@ reactor_backend_epoll::wait_and_process(int timeout, const sigset_t* active_sigm
             // send/recv/accept/connect handle the specific error.
             evt.events = pfd->events_requested;
         }
-        auto events = evt.events & (EPOLLIN | EPOLLOUT);
+        auto events = evt.events & (EPOLLIN | EPOLLOUT | EPOLLRDHUP);
         auto events_to_remove = events & ~pfd->events_requested;
+        complete_epoll_event(*pfd, events, EPOLLRDHUP);
         if (pfd->events_rw) {
             // accept() signals normal completions via EPOLLIN, but errors (due to shutdown())
             // via EPOLLOUT|EPOLLHUP, so we have to wait for both EPOLLIN and EPOLLOUT with the
@@ -852,12 +872,16 @@ reactor_backend_epoll::wait_and_process(int timeout, const sigset_t* active_sigm
 class epoll_pollable_fd_state : public pollable_fd_state {
     pollable_fd_state_completion _pollin;
     pollable_fd_state_completion _pollout;
+    pollable_fd_state_completion _pollrdhup;
 
     pollable_fd_state_completion* get_desc(int events) {
         if (events & EPOLLIN) {
             return &_pollin;
         }
-        return &_pollout;
+        if (events & EPOLLOUT) {
+            return &_pollout;
+        }
+        return &_pollrdhup;
     }
 public:
     explicit epoll_pollable_fd_state(file_desc fd, speculation speculate)
@@ -971,6 +995,10 @@ future<> reactor_backend_epoll::readable_or_writeable(pollable_fd_state& fd) {
     return get_epoll_future(fd, EPOLLIN | EPOLLOUT);
 }
 
+future<> reactor_backend_epoll::poll_rdhup(pollable_fd_state& fd) {
+    return get_epoll_future(fd, POLLRDHUP);
+}
+
 void reactor_backend_epoll::forget(pollable_fd_state& fd) noexcept {
     if (fd.events_epoll) {
         ::epoll_ctl(_epollfd.get(), EPOLL_CTL_DEL, fd.fd.get(), nullptr);
@@ -993,13 +1021,13 @@ void reactor_backend_epoll::shutdown(pollable_fd_state& fd, int how) {
 }
 
 future<size_t>
-reactor_backend_epoll::read_some(pollable_fd_state& fd, void* buffer, size_t len) {
-    return _r.do_read_some(fd, buffer, len);
+reactor_backend_epoll::read(pollable_fd_state& fd, void* buffer, size_t len) {
+    return _r.do_read(fd, buffer, len);
 }
 
 future<size_t>
-reactor_backend_epoll::read_some(pollable_fd_state& fd, const std::vector<iovec>& iov) {
-    return _r.do_read_some(fd, iov);
+reactor_backend_epoll::recvmsg(pollable_fd_state& fd, const std::vector<iovec>& iov) {
+    return _r.do_recvmsg(fd, iov);
 }
 
 future<temporary_buffer<char>>
@@ -1008,13 +1036,13 @@ reactor_backend_epoll::read_some(pollable_fd_state& fd, internal::buffer_allocat
 }
 
 future<size_t>
-reactor_backend_epoll::write_some(pollable_fd_state& fd, const void* buffer, size_t len) {
-    return _r.do_write_some(fd, buffer, len);
+reactor_backend_epoll::send(pollable_fd_state& fd, const void* buffer, size_t len) {
+    return _r.do_send(fd, buffer, len);
 }
 
 future<size_t>
-reactor_backend_epoll::write_some(pollable_fd_state& fd, net::packet& p) {
-    return _r.do_write_some(fd, p);
+reactor_backend_epoll::sendmsg(pollable_fd_state& fd, net::packet& p) {
+    return _r.do_sendmsg(fd, p);
 }
 
 future<temporary_buffer<char>>
@@ -1104,12 +1132,12 @@ reactor_backend_osv::recv(pollable_fd_state& fd, void* buffer, size_t len) {
 }
 
 future<size_t>
-reactor_backend_osv::read_some(pollable_fd_state& fd, void* buffer, size_t len) {
+reactor_backend_osv::read(pollable_fd_state& fd, void* buffer, size_t len) {
     return engine().do_read_some(fd, buffer, len);
 }
 
 future<size_t>
-reactor_backend_osv::read_some(pollable_fd_state& fd, const std::vector<iovec>& iov) {
+reactor_backend_osv::recvmsg(pollable_fd_state& fd, const std::vector<iovec>& iov) {
     return engine().do_read_some(fd, iov);
 }
 
@@ -1119,13 +1147,18 @@ reactor_backend_osv::read_some(pollable_fd_state& fd, internal::buffer_allocator
 }
 
 future<size_t>
-reactor_backend_osv::write_some(pollable_fd_state& fd, const void* buffer, size_t len) {
-    return engine().do_write_some(fd, buffer, len);
+reactor_backend_osv::send(pollable_fd_state& fd, const void* buffer, size_t len) {
+    return engine().do_send(fd, buffer, len);
 }
 
 future<size_t>
-reactor_backend_osv::write_some(pollable_fd_state& fd, net::packet& p) {
-    return engine().do_write_some(fd, p);
+reactor_backend_osv::sendmsg(pollable_fd_state& fd, net::packet& p) {
+    return engine().do_sendmsg(fd, p);
+}
+
+future<temporary_buffer<char>>
+reactor_backend_osv::recv_some(pollable_fd_state& fd, internal::buffer_allocator* ba) {
+    return engine().do_recv_some(fd, p);
 }
 
 void
@@ -1214,11 +1247,25 @@ have_md_devices() {
     return false;
 }
 
+static size_t mlock_limit() {
+    struct ::rlimit lim;
+    int r = ::getrlimit(RLIMIT_MEMLOCK, &lim);
+    if (r == -1) {
+        return 0; // assume the worst; this is advisory anyway
+    }
+    return lim.rlim_cur;
+}
+
 static
 bool
 detect_io_uring() {
     if (!kernel_uname().whitelisted({"5.17"}) && have_md_devices()) {
         // Older kernels fall back to workqueues for RAID devices
+        return false;
+    }
+    if (!kernel_uname().whitelisted({"5.12"}) && mlock_limit() < (8 << 20)) {
+        // Older kernels lock about 32k/vcpu for the ring itself. Require 8MB of
+        // locked memory to be safe (8MB is what newer kernels and newer systemd provide)
         return false;
     }
     auto ring_opt = try_create_uring(1, false);
@@ -1243,6 +1290,7 @@ class reactor_backend_uring final : public reactor_backend {
     class uring_pollable_fd_state : public pollable_fd_state {
         pollable_fd_state_completion _completion_pollin;
         pollable_fd_state_completion _completion_pollout;
+        pollable_fd_state_completion _completion_pollrdhup;
     public:
         explicit uring_pollable_fd_state(file_desc desc, speculation speculate)
                 : pollable_fd_state(std::move(desc), std::move(speculate)) {
@@ -1250,8 +1298,10 @@ class reactor_backend_uring final : public reactor_backend {
         pollable_fd_state_completion* get_desc(int events) {
             if (events & POLLIN) {
                 return &_completion_pollin;
-            } else {
+            } else if (events & POLLOUT) {
                 return &_completion_pollout;
+            } else {
+                return &_completion_pollrdhup;
             }
         }
         future<> get_completion_future(int events) {
@@ -1343,43 +1393,65 @@ private:
         return ufd->get_completion_future(events);
     }
 
-    void submit_io_request(internal::io_request& req, io_completion* completion) {
+    void submit_io_request(const internal::io_request& req, io_completion* completion) {
         auto sqe = get_sqe();
         using o = internal::io_request::operation;
         switch (req.opcode()) {
-            case o::read:
-                ::io_uring_prep_read(sqe, req.fd(), req.address(), req.size(), req.pos());
+            case o::read: {
+                const auto& op = req.as<io_request::operation::read>();
+                ::io_uring_prep_read(sqe, op.fd, op.addr, op.size, op.pos);
                 break;
-            case o::write:
-                ::io_uring_prep_write(sqe, req.fd(), req.address(), req.size(), req.pos());
+            }
+            case o::write: {
+                const auto& op = req.as<io_request::operation::write>();
+                ::io_uring_prep_write(sqe, op.fd, op.addr, op.size, op.pos);
                 break;
-            case o::readv:
-                ::io_uring_prep_readv(sqe, req.fd(), req.iov(), req.iov_len(), req.pos());
+            }
+            case o::readv: {
+                const auto& op = req.as<io_request::operation::readv>();
+                ::io_uring_prep_readv(sqe, op.fd, op.iovec, op.iov_len, op.pos);
                 break;
-            case o::writev:
-                ::io_uring_prep_writev(sqe, req.fd(), req.iov(), req.iov_len(), req.pos());
+            }
+            case o::writev: {
+                const auto& op = req.as<io_request::operation::writev>();
+                ::io_uring_prep_writev(sqe, op.fd, op.iovec, op.iov_len, op.pos);
                 break;
-            case o::fdatasync:
-                ::io_uring_prep_fsync(sqe, req.fd(), IORING_FSYNC_DATASYNC);
+            }
+            case o::fdatasync: {
+                const auto& op = req.as<io_request::operation::fdatasync>();
+                ::io_uring_prep_fsync(sqe, op.fd, IORING_FSYNC_DATASYNC);
                 break;
-            case o::recv:
-                ::io_uring_prep_recv(sqe, req.fd(), req.address(), req.size(), req.flags());
+            }
+            case o::recv: {
+                const auto& op = req.as<io_request::operation::recv>();
+                ::io_uring_prep_recv(sqe, op.fd, op.addr, op.size, op.flags);
                 break;
-            case o::recvmsg:
-                ::io_uring_prep_recvmsg(sqe, req.fd(), req.msghdr(), req.flags());
+            }
+            case o::recvmsg: {
+                const auto& op = req.as<io_request::operation::recvmsg>();
+                ::io_uring_prep_recvmsg(sqe, op.fd, op.msghdr, op.flags);
                 break;
-            case o::send:
-                ::io_uring_prep_send(sqe, req.fd(), req.address(), req.size(), req.flags());
+            }
+            case o::send: {
+                const auto& op = req.as<io_request::operation::send>();
+                ::io_uring_prep_send(sqe, op.fd, op.addr, op.size, op.flags);
                 break;
-            case o::sendmsg:
-                ::io_uring_prep_sendmsg(sqe, req.fd(), req.msghdr(), req.flags());
+            }
+            case o::sendmsg: {
+                const auto& op = req.as<io_request::operation::sendmsg>();
+                ::io_uring_prep_sendmsg(sqe, op.fd, op.msghdr, op.flags);
                 break;
-            case o::accept:
-                ::io_uring_prep_accept(sqe, req.fd(), req.posix_sockaddr(), req.socklen_ptr(), req.flags());
+            }
+            case o::accept: {
+                const auto& op = req.as<io_request::operation::accept>();
+                ::io_uring_prep_accept(sqe, op.fd, op.sockaddr, op.socklen_ptr, op.flags);
                 break;
-            case o::connect:
-                ::io_uring_prep_connect(sqe, req.fd(), req.posix_sockaddr(), req.socklen());
+            }
+            case o::connect: {
+                const auto& op = req.as<io_request::operation::connect>();
+                ::io_uring_prep_connect(sqe, op.fd, op.sockaddr, op.socklen);
                 break;
+            }
             case o::poll_add:
             case o::poll_remove:
             case o::cancel:
@@ -1396,7 +1468,7 @@ private:
 
     // Returns true if any work was done
     bool queue_pending_file_io() {
-        return _r._io_sink.drain([&] (internal::io_request& req, io_completion* completion) -> bool {
+        return _r._io_sink.drain([&] (const internal::io_request& req, io_completion* completion) -> bool {
             submit_io_request(req, completion);
             return true;
         });
@@ -1500,6 +1572,9 @@ public:
     virtual future<> readable_or_writeable(pollable_fd_state& fd) override {
         return poll(fd, POLLIN | POLLOUT);
     }
+    virtual future<> poll_rdhup(pollable_fd_state& fd) override {
+        return poll(fd, POLLRDHUP);
+    }
     virtual void forget(pollable_fd_state& fd) noexcept override {
         auto* pfd = static_cast<uring_pollable_fd_state*>(&fd);
         delete pfd;
@@ -1598,47 +1673,10 @@ public:
     virtual void shutdown(pollable_fd_state& fd, int how) override {
         fd.fd.shutdown(how);
     }
-    virtual future<size_t> read_some(pollable_fd_state& fd, void* buffer, size_t len) override {
-        if (fd.take_speculation(POLLIN)) {
-            try {
-                auto r = fd.fd.read(buffer, len);
-                if (r) {
-                    if (size_t(*r) == len) {
-                        fd.speculate_epoll(EPOLLIN);
-                    }
-                    return make_ready_future<size_t>(*r);
-                }
-            } catch (...) {
-                return current_exception_as_future<size_t>();
-            }
-        }
-        class read_completion final : public io_completion {
-            pollable_fd_state& _fd;
-            const size_t _to_read;
-            promise<size_t> _result;
-        public:
-            read_completion(pollable_fd_state& fd, size_t to_read)
-                : _fd(fd), _to_read(to_read) {}
-            void complete(size_t bytes) noexcept final {
-                if (bytes == _to_read) {
-                    _fd.speculate_epoll(EPOLLIN);
-                }
-                _result.set_value(bytes);
-                delete this;
-            }
-            void set_exception(std::exception_ptr eptr) noexcept final {
-                _result.set_exception(eptr);
-                delete this;
-            }
-            future<size_t> get_future() {
-                return _result.get_future();
-            }
-        };
-        auto desc = std::make_unique<read_completion>(fd, len);
-        auto req = internal::io_request::make_read(fd.fd.get(), -1, buffer, len, false);
-        return submit_request(std::move(desc), std::move(req));
+    virtual future<size_t> read(pollable_fd_state& fd, void* buffer, size_t len) override {
+        return _r.do_read(fd, buffer, len);
     }
-    virtual future<size_t> read_some(pollable_fd_state& fd, const std::vector<iovec>& iov) override {
+    virtual future<size_t> recvmsg(pollable_fd_state& fd, const std::vector<iovec>& iov) override {
         if (fd.take_speculation(POLLIN)) {
             ::msghdr mh = {};
             mh.msg_iov = const_cast<iovec*>(iov.data());
@@ -1739,7 +1777,7 @@ public:
             return submit_request(std::move(desc), std::move(req));
         });
     }
-    virtual future<size_t> write_some(pollable_fd_state& fd, net::packet& p) final {
+    virtual future<size_t> sendmsg(pollable_fd_state& fd, net::packet& p) final {
         if (fd.take_speculation(EPOLLOUT)) {
             static_assert(offsetof(iovec, iov_base) == offsetof(net::fragment, base) &&
                 sizeof(iovec::iov_base) == sizeof(net::fragment::base) &&
@@ -1797,7 +1835,7 @@ public:
         auto req = internal::io_request::make_sendmsg(fd.fd.get(), desc->msghdr(), MSG_NOSIGNAL);
         return submit_request(std::move(desc), std::move(req));
     }
-    virtual future<size_t> write_some(pollable_fd_state& fd, const void* buffer, size_t len) override {
+    virtual future<size_t> send(pollable_fd_state& fd, const void* buffer, size_t len) override {
         if (fd.take_speculation(EPOLLOUT)) {
             try {
                 auto r = fd.fd.send(buffer, len, MSG_NOSIGNAL | MSG_DONTWAIT);
@@ -1847,6 +1885,7 @@ public:
                     if (size_t(*r) == buffer.size()) {
                         fd.speculate_epoll(EPOLLIN);
                     }
+                    buffer.trim(*r);
                     return make_ready_future<temporary_buffer<char>>(std::move(buffer));
                 }
             } catch (...) {
@@ -1979,15 +2018,15 @@ reactor_backend_selector reactor_backend_selector::default_backend() {
 
 std::vector<reactor_backend_selector> reactor_backend_selector::available() {
     std::vector<reactor_backend_selector> ret;
-    if (has_enough_aio_nr() && detect_aio_poll()) {
-        ret.push_back(reactor_backend_selector("linux-aio"));
-    }
-    ret.push_back(reactor_backend_selector("epoll"));
 #ifdef SEASTAR_HAVE_URING
     if (detect_io_uring()) {
         ret.push_back(reactor_backend_selector("io_uring"));
     }
 #endif
+    if (has_enough_aio_nr() && detect_aio_poll()) {
+        ret.push_back(reactor_backend_selector("linux-aio"));
+    }
+    ret.push_back(reactor_backend_selector("epoll"));
     return ret;
 }
 

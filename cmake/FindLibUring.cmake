@@ -22,19 +22,19 @@
 
 find_package (PkgConfig REQUIRED)
 
-pkg_search_module (URING liburing)
+pkg_check_modules (PC_URING QUIET liburing)
 
 find_library (URING_LIBRARY
   NAMES uring
   HINTS
-    ${URING_PC_LIBDIR}
-    ${URING_PC_LIBRARY_DIRS})
+    ${PC_URING_LIBDIR}
+    ${PC_URING_LIBRARY_DIRS})
 
 find_path (URING_INCLUDE_DIR
   NAMES liburing.h
   HINTS
-    ${URING_PC_INCLUDEDIR}
-    ${URING_PC_INCLUDE_DIRS})
+    ${PC_URING_INCLUDEDIR}
+    ${PC_URING_INCLUDE_DIRS})
 
 if (URING_INCLUDE_DIR)
   include (CheckStructHasMember)
@@ -51,7 +51,6 @@ mark_as_advanced (
   URING_INCLUDE_DIR
   HAVE_IOURING_FEATURES)
 
-
 include (FindPackageHandleStandardArgs)
 
 find_package_handle_standard_args (LibUring
@@ -59,16 +58,17 @@ find_package_handle_standard_args (LibUring
     URING_LIBRARY
     URING_INCLUDE_DIR
     HAVE_IOURING_FEATURES
-  VERSION_VAR URING_PC_VERSION)
+  VERSION_VAR PC_URING_VERSION)
 
-set (URING_LIBRARIES ${URING_LIBRARY})
-set (URING_INCLUDE_DIRS ${URING_INCLUDE_DIR})
+if (LibUring_FOUND)
+  set (URING_LIBRARIES ${URING_LIBRARY})
+  set (URING_INCLUDE_DIRS ${URING_INCLUDE_DIR})
+  if (NOT (TARGET URING::uring))
+    add_library (URING::uring UNKNOWN IMPORTED)
 
-if (URING_FOUND AND NOT (TARGET URING::uring))
-  add_library (URING::uring UNKNOWN IMPORTED)
-
-  set_target_properties (URING::uring
-    PROPERTIES
-      IMPORTED_LOCATION ${URING_LIBRARY}
-      INTERFACE_INCLUDE_DIRECTORIES ${URING_INCLUDE_DIRS})
+    set_target_properties (URING::uring
+      PROPERTIES
+        IMPORTED_LOCATION ${URING_LIBRARY}
+        INTERFACE_INCLUDE_DIRECTORIES ${URING_INCLUDE_DIRS})
+  endif ()
 endif ()

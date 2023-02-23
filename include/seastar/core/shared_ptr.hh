@@ -22,14 +22,20 @@
 #pragma once
 
 #include <seastar/core/shared_ptr_debug_helper.hh>
-#include <utility>
-#include <type_traits>
-#include <functional>
-#include <ostream>
 #include <seastar/util/is_smart_ptr.hh>
 #include <seastar/util/indirect.hh>
-
 #include <boost/intrusive/parent_from_member.hpp>
+#include <functional>
+#include <memory>
+#include <ostream>
+#include <type_traits>
+#include <utility>
+
+#if defined(__GNUC__) && !defined(__clang__) && (__GNUC__ >= 12)
+// to silence the false alarm from GCC 12, see
+// https://gcc.gnu.org/bugzilla/show_bug.cgi?id=105204
+#define SEASTAR_IGNORE_USE_AFTER_FREE
+#endif
 
 namespace seastar {
 
@@ -290,7 +296,12 @@ public:
     lw_shared_ptr(std::nullptr_t) noexcept : lw_shared_ptr() {}
     lw_shared_ptr(const lw_shared_ptr& x) noexcept : _p(x._p) {
         if (_p) {
+#pragma GCC diagnostic push
+#ifdef SEASTAR_IGNORE_USE_AFTER_FREE
+#pragma GCC diagnostic ignored "-Wuse-after-free"
+#endif
             ++_p->_count;
+#pragma GCC diagnostic pop
         }
     }
     lw_shared_ptr(lw_shared_ptr&& x) noexcept  : _p(x._p) {
@@ -298,9 +309,14 @@ public:
     }
     [[gnu::always_inline]]
     ~lw_shared_ptr() {
+#pragma GCC diagnostic push
+#ifdef SEASTAR_IGNORE_USE_AFTER_FREE
+#pragma GCC diagnostic ignored "-Wuse-after-free"
+#endif
         if (_p && !--_p->_count) {
             accessors<T>::dispose(_p);
         }
+#pragma GCC diagnostic pop
     }
     lw_shared_ptr& operator=(const lw_shared_ptr& x) noexcept {
         if (_p != x._p) {
@@ -534,9 +550,14 @@ public:
         x._p = nullptr;
     }
     ~shared_ptr() {
+#pragma GCC diagnostic push
+#ifdef SEASTAR_IGNORE_USE_AFTER_FREE
+#pragma GCC diagnostic ignored "-Wuse-after-free"
+#endif
         if (_b && !--_b->count) {
             delete _b;
         }
+#pragma GCC diagnostic pop
     }
     shared_ptr& operator=(const shared_ptr& x) noexcept {
         if (this != &x) {
@@ -718,6 +739,20 @@ operator==(std::nullptr_t, const shared_ptr<T>& y) {
     return nullptr == y.get();
 }
 
+template <typename T>
+inline
+bool
+operator==(const lw_shared_ptr<T>& x, std::nullptr_t) {
+    return x.get() == nullptr;
+}
+
+template <typename T>
+inline
+bool
+operator==(std::nullptr_t, const lw_shared_ptr<T>& y) {
+    return nullptr == y.get();
+}
+
 template <typename T, typename U>
 inline
 bool
@@ -736,6 +771,20 @@ template <typename T>
 inline
 bool
 operator!=(std::nullptr_t, const shared_ptr<T>& y) {
+    return nullptr != y.get();
+}
+
+template <typename T>
+inline
+bool
+operator!=(const lw_shared_ptr<T>& x, std::nullptr_t) {
+    return x.get() != nullptr;
+}
+
+template <typename T>
+inline
+bool
+operator!=(std::nullptr_t, const lw_shared_ptr<T>& y) {
     return nullptr != y.get();
 }
 
@@ -855,6 +904,20 @@ struct hash<seastar::shared_ptr<T>> : private hash<T*> {
         return hash<T*>::operator()(p.get());
     }
 };
+
+}
+
+namespace fmt {
+
+template<typename T>
+const void* ptr(const seastar::lw_shared_ptr<T>& p) {
+    return p.get();
+}
+
+template<typename T>
+const void* ptr(const seastar::shared_ptr<T>& p) {
+    return p.get();
+}
 
 }
 

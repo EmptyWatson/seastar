@@ -42,6 +42,7 @@
 ///   - \ref thread-module Support for traditional threaded execution
 ///   - \ref rpc Build high-level communication protocols
 ///   - \ref websocket (experimental) Implement a WebSocket-based server
+///   - \ref fsnotifier (experimental) Implement a filesystem modification notifier.
 ///
 /// View the [Seastar compatibility statement](./md_compatibility.html) for
 /// information about library evolution.
@@ -49,9 +50,14 @@
 #include <seastar/core/sstring.hh>
 #include <seastar/core/future.hh>
 #include <seastar/core/file-types.hh>
+#include <seastar/core/posix.hh>
 #include <seastar/util/bool_class.hh>
 #include <seastar/util/std-compat.hh>
 #include "./internal/api-level.hh"
+#include <cstdint>
+#include <filesystem>
+#include <optional>
+#include <string_view>
 
 namespace seastar {
 
@@ -75,6 +81,12 @@ namespace net {
 
 class udp_channel;
 
+}
+
+namespace experimental {
+// process.hh
+class process;
+struct spawn_parameters;
 }
 
 // Networking API
@@ -384,4 +396,40 @@ future<uint64_t> fs_avail(std::string_view name) noexcept;
 future<uint64_t> fs_free(std::string_view name) noexcept;
 /// @}
 
+namespace experimental {
+/// \defgroup interprocess-module Interprocess Communication
+///
+/// Seastar provides a set of APIs for interprocess communicate
+
+/// \addtogroup interprocess-module
+/// @{
+
+/// Create a pipe using \c pipe2
+///
+/// \return a tuple of \c file_desc, the first one for reading from the pipe, the second
+/// for writing to it.
+future<std::tuple<file_desc, file_desc>> make_pipe();
+
+/// Spawn a subprocess
+///
+/// \param pathname the path to the executable
+/// \param params parameters for spawning the subprocess
+///
+/// \return a process representing the spawned subprocess
+/// \note
+/// the subprocess is spawned with \c posix_spawn() system call, so the
+/// pathname should be relative or absolute path of the executable.
+future<process> spawn_process(const std::filesystem::path& pathname,
+                              spawn_parameters params);
+/// Spawn a subprocess
+///
+/// \param pathname the path to the executable
+///
+/// \return a process representing the spawned subprocess
+/// \note
+/// the this overload does not specify a \c params parameters for spawning the
+/// subprocess. Instead, it uses the pathname for the \c argv[0] in the params.
+future<process> spawn_process(const std::filesystem::path& pathname);
+/// @}
+}
 }

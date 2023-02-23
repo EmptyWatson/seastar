@@ -192,6 +192,7 @@ def configure_mode(mode):
         '-DCMAKE_CXX_STANDARD={}'.format(args.cpp_standard),
         '-DCMAKE_INSTALL_PREFIX={}'.format(args.install_prefix),
         '-DCMAKE_EXPORT_COMPILE_COMMANDS={}'.format('yes' if args.cc_json else 'no'),
+        '-DBUILD_SHARED_LIBS={}'.format('yes' if mode in ('debug', 'dev') else 'no'),
         '-DSeastar_API_LEVEL={}'.format(args.api_level),
         '-DSeastar_SCHEDULING_GROUPS_COUNT={}'.format(args.scheduling_groups_count),
         tr(args.exclude_tests, 'EXCLUDE_TESTS_FROM_ALL'),
@@ -226,7 +227,12 @@ def configure_mode(mode):
         for ingredient in ingredients_to_cook:
             inclusion_arguments.extend(['-i', ingredient])
 
-        ARGS = seastar_cmake.COOKING_BASIC_ARGS + inclusion_arguments + ['-d', BUILD_PATH, '--']
+        ARGS = seastar_cmake.COOKING_BASIC_ARGS + inclusion_arguments
+        if args.user_cflags:
+            ARGS += ['-s', f'CXXFLAGS={args.user_cflags}']
+        if args.user_ldflags:
+            ARGS += ['-s', f'LDFLAGS={args.user_ldflags}']
+        ARGS += ['-d', BUILD_PATH, '--']
         dir = seastar_cmake.ROOT_PATH
     else:
         # When building without cooked dependencies, we can invoke cmake directly. We can't call
