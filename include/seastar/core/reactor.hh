@@ -52,6 +52,7 @@
 #include <seastar/core/temporary_buffer.hh>
 #include <seastar/core/thread_cputime_clock.hh>
 #include <seastar/core/timer.hh>
+#include <seastar/core/gate.hh>
 #include <seastar/net/api.hh>
 #include <seastar/util/eclipse.hh>
 #include <seastar/util/log.hh>
@@ -135,7 +136,8 @@ class reactor_stall_sampler;
 class cpu_stall_detector;
 class buffer_allocator;
 
-template <typename Func> // signature: bool ()
+template <typename Func>
+SEASTAR_CONCEPT( requires std::is_invocable_r_v<bool, Func> )
 std::unique_ptr<pollfn> make_pollfn(Func&& func);
 
 class poller {
@@ -144,7 +146,8 @@ class poller {
     class deregistration_task;
     registration_task* _registration_task = nullptr;
 public:
-    template <typename Func> // signature: bool ()
+    template <typename Func>
+    SEASTAR_CONCEPT( requires std::is_invocable_r_v<bool, Func> )
     static poller simple(Func&& poll) {
         return poller(make_pollfn(std::forward<Func>(poll)));
     }
@@ -359,6 +362,7 @@ private:
     bool _have_aio_fsync = false;
     bool _kernel_page_cache = false;
     std::atomic<bool> _dying{false};
+    gate _background_gate;
 private:
     static std::chrono::nanoseconds calculate_poll_time();
     static void block_notifier(int);
@@ -564,6 +568,16 @@ public:
     void add_task(task* t) noexcept;
     void add_urgent_task(task* t) noexcept;
 
+    void run_in_background(future<> f);
+
+    template <typename Func>
+    void run_in_background(Func&& func) {
+        run_in_background(futurize_invoke(std::forward<Func>(func)));
+    }
+
+    // Waits for all background tasks on all shards
+    static future<> drain();
+
     /// Set a handler that will be called when there is no task to execute on cpu.
     /// Handler should do a low priority work.
     /// 
@@ -698,7 +712,8 @@ public:
     std::function<void ()> get_stall_detector_report_function() const;
 };
 
-template <typename Func> // signature: bool ()
+template <typename Func>
+SEASTAR_CONCEPT( requires std::is_invocable_r_v<bool, Func> )
 inline
 std::unique_ptr<seastar::pollfn>
 internal::make_pollfn(Func&& func) {

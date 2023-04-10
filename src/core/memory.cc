@@ -100,6 +100,10 @@ disable_abort_on_alloc_failure_temporarily::~disable_abort_on_alloc_failure_temp
     --abort_on_alloc_failure_suppressed;
 }
 
+void enable_abort_on_allocation_failure() {
+    set_abort_on_allocation_failure(true);
+}
+
 static std::pmr::polymorphic_allocator<char> static_malloc_allocator{std::pmr::get_default_resource()};;
 std::pmr::polymorphic_allocator<char>* malloc_allocator{&static_malloc_allocator};
 
@@ -1548,9 +1552,9 @@ void configure(std::vector<resource::memory> m, bool mbind,
 
             if (r == -1) {
                 char err[1000] = {};
-                strerror_r(errno, err, sizeof(err));
+                char *msg = strerror_r(errno, err, sizeof(err));
                 std::cerr << "WARNING: unable to mbind shard memory; performance may suffer: "
-                        << err << std::endl;
+                        << msg << std::endl;
             }
         }
 #endif
@@ -1600,8 +1604,12 @@ public:
 static std::atomic<bool> abort_on_allocation_failure{false};
 static std::atomic<alloc_failure_kind> dump_diagnostics_on_alloc_failure_kind{alloc_failure_kind::critical};
 
-void enable_abort_on_allocation_failure() {
-    abort_on_allocation_failure.store(true, std::memory_order_seq_cst);
+void set_abort_on_allocation_failure(bool enabled) {
+    abort_on_allocation_failure.store(enabled, std::memory_order_seq_cst);
+}
+
+bool is_abort_on_allocation_failure() {
+    return abort_on_allocation_failure;
 }
 
 void set_dump_memory_diagnostics_on_alloc_failure_kind(alloc_failure_kind kind) {
@@ -1926,14 +1934,12 @@ void* realloc(void* ptr, size_t size) {
         // If ptr is a null pointer, the behavior is the same as calling std::malloc(new_size).
         return malloc(size);
     } else if (!is_seastar_memory(ptr)) {
-        // we can't realloc foreign memory on a shard
-        if (is_reactor_thread) {
-            abort();
-        }
         // original_realloc_func might be null when previous ctor allocates
         if (original_realloc_func) {
             return original_realloc_func(ptr, size);
         }
+        // we can't realloc foreign memory without the original libc function
+        abort();
     }
     // if we're here, it's a non-null seastar memory ptr
     // or original functions aren't available.
@@ -2268,8 +2274,14 @@ scoped_heap_profiling::scoped_heap_profiling() noexcept {
 scoped_heap_profiling::~scoped_heap_profiling() {
 }
 
-void enable_abort_on_allocation_failure() {
-    seastar_logger.warn("Seastar compiled with default allocator, will not abort on bad_alloc");
+void set_abort_on_allocation_failure(bool enabled) {
+    if (enabled) {
+        seastar_logger.warn("Seastar compiled with default allocator, will not abort on bad_alloc");
+    }
+}
+
+bool is_abort_on_allocation_failure() {
+    return false;
 }
 
 reclaimer::reclaimer(std::function<reclaiming_result ()> reclaim, reclaimer_scope) {

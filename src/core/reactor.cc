@@ -674,8 +674,13 @@ reactor::signals::signal_handler::signal_handler(int signo, noncopyable_function
 
 void
 reactor::signals::handle_signal(int signo, noncopyable_function<void ()>&& handler) {
-    _signal_handlers.emplace(std::piecewise_construct,
-        std::make_tuple(signo), std::make_tuple(signo, std::move(handler)));
+    signal_handler h(signo, std::move(handler));
+    auto [_, inserted] =  _signal_handlers.insert_or_assign(signo, std::move(h));
+    if (!inserted) {
+        // since we register the same handler to OS for all signals, we could
+        // skip sigaction when a handler has already been registered before.
+        return;
+    }
 
     struct sigaction sa;
     sa.sa_sigaction = [](int sig, siginfo_t *info, void *p) {
@@ -1341,10 +1346,26 @@ cpu_stall_detector_linux_perf_event::try_make(cpu_stall_detector_config cfg) {
 
 
 std::unique_ptr<cpu_stall_detector> make_cpu_stall_detector(cpu_stall_detector_config cfg) {
+    bool was_eaccess_failure = false;
     try {
-        return cpu_stall_detector_linux_perf_event::try_make(cfg);
+        try {
+            return cpu_stall_detector_linux_perf_event::try_make(cfg);
+        } catch (std::system_error& e) {
+            // This failure occurs when /proc/sys/kernel/perf_event_paranoid is set
+            // to 2 or higher, and is expected since most distributions set it to that
+            // way as of 2023. In this case we log a different message and only at INFO
+            // level on shard 0.
+            was_eaccess_failure = e.code() == std::error_code(EACCES, std::system_category());
+            throw;
+        }
     } catch (...) {
-        seastar_logger.warn("Creation of perf_event based stall detector failed, falling back to posix timer: {}", std::current_exception());
+        if (was_eaccess_failure) {
+            seastar_logger.info0("Perf-based stall detector creation failed (EACCESS), "
+                    "try setting /proc/sys/kernel/perf_event_paranoid to 1 or less to "
+                    "enable kernel backtraces: falling back to posix timer.");
+        } else {
+            seastar_logger.warn("Creation of perf_event based stall detector failed: falling back to posix timer: {}", std::current_exception());
+        }
         return std::make_unique<cpu_stall_detector_posix_timer>(cfg);
     }
 }
@@ -1992,6 +2013,11 @@ reactor::spawn(std::string_view pathname,
                 std::get<pipefd_read_end>(cin_pipe).spawn_actions_add_close(&actions);
                 std::get<pipefd_write_end>(cout_pipe).spawn_actions_add_close(&actions);
                 std::get<pipefd_write_end>(cerr_pipe).spawn_actions_add_close(&actions);
+                // tools like "cat" expect a fd opened in blocking mode when performing I/O
+                std::get<pipefd_read_end>(cin_pipe).template ioctl<int>(FIONBIO, 0);
+                std::get<pipefd_write_end>(cout_pipe).template ioctl<int>(FIONBIO, 0);
+                std::get<pipefd_write_end>(cerr_pipe).template ioctl<int>(FIONBIO, 0);
+
                 r = ::posix_spawnattr_init(&attr);
                 throw_pthread_error(r);
                 // make sure the following signals are not ignored by the child process
@@ -2388,7 +2414,6 @@ void reactor::at_exit(noncopyable_function<future<> ()> func) {
 
 future<> reactor::run_exit_tasks() {
     _stop_requested.broadcast();
-    _stopping = true;
     stop_aio_eventfd_loop();
     return do_for_each(_exit_funcs.rbegin(), _exit_funcs.rend(), [] (auto& func) {
         return func();
@@ -2398,11 +2423,12 @@ future<> reactor::run_exit_tasks() {
 void reactor::stop() {
     assert(_id == 0);
     _smp->cleanup_cpu();
-    if (!_stopping) {
+    if (!std::exchange(_stopping, true)) {
         // Run exit tasks locally and then stop all other engines
         // in the background and wait on semaphore for all to complete.
         // Finally, set _stopped on cpu 0.
-        (void)run_exit_tasks().then([this] {
+        (void)drain().then([this] {
+          return run_exit_tasks().then([this] {
             return do_with(semaphore(0), [this] (semaphore& sem) {
                 // Stop other cpus asynchronously, signal when done.
                 (void)smp::invoke_on_others(0, [] {
@@ -2417,6 +2443,7 @@ void reactor::stop() {
                     _stopped = true;
                 });
             });
+          });
         });
     }
 }
@@ -2612,9 +2639,11 @@ void
 manual_clock::advance(manual_clock::duration d) noexcept {
     _now.fetch_add(d.count());
     if (local_engine) {
-        schedule_urgent(make_task(default_scheduling_group(), &manual_clock::expire_timers));
         // Expire timers on all cores in the background.
-        (void)smp::invoke_on_all(&manual_clock::expire_timers);
+        local_engine->run_in_background([] {
+            schedule_urgent(make_task(default_scheduling_group(), &manual_clock::expire_timers));
+            return smp::invoke_on_all(&manual_clock::expire_timers);
+        });
     }
 }
 
@@ -2948,6 +2977,30 @@ void reactor::add_urgent_task(task* t) noexcept {
     if (was_empty) {
         activate(*q);
     }
+}
+
+void reactor::run_in_background(future<> f) {
+    try {
+        // _backgroud_gate closed in reactor::close()
+        (void)with_gate(_background_gate, [f = std::move(f)] () mutable {
+            return f.handle_exception([] (std::exception_ptr ex) {
+                seastar_logger.warn("Ignored background task failure: {}", std::move(ex));
+            });
+        });
+    } catch (...) {
+        // Swallow gate_closed_exception in particular
+        seastar_logger.error("run_in_background: {}", std::current_exception());
+    }
+}
+
+future<> reactor::drain() {
+    seastar_logger.debug("reactor::drain");
+    return smp::invoke_on_all([] {
+        if (engine()._background_gate.is_closed()) {
+            return make_ready_future<>();
+        }
+        return engine()._background_gate.close();
+    });
 }
 
 void
@@ -4211,7 +4264,7 @@ void smp::configure(const smp_options& smp_opts, const reactor_options& reactor_
     }
 
     if (reactor_opts.abort_on_seastar_bad_alloc) {
-        memory::enable_abort_on_allocation_failure();
+        memory::set_abort_on_allocation_failure(true);
     }
 
     if (reactor_opts.dump_memory_diagnostics_on_alloc_failure_kind) {

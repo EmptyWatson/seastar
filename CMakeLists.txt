@@ -26,6 +26,11 @@ list (APPEND CMAKE_MODULE_PATH
   ${CMAKE_CURRENT_SOURCE_DIR}/cmake
   ${CMAKE_CURRENT_BINARY_DIR})
 
+cmake_policy (SET CMP0090 NEW)
+if (POLICY CMP0135)
+  cmake_policy (SET CMP0135 NEW)
+endif ()
+
 include (Cooking OPTIONAL)
 
 # This variable impacts the way DPDK is configured by cmake-cooking (if DPDK is enabled), so its definition needs to
@@ -39,11 +44,6 @@ set (Seastar_DPDK_MACHINE
 project (Seastar
   VERSION 1.0
   LANGUAGES CXX)
-
-cmake_policy (SET CMP0090 NEW)
-if (POLICY CMP0135)
-  cmake_policy (SET CMP0135 NEW)
-endif ()
 
 # generic boolean values passed as string, potentially from configure.py
 set (True_STRING_VALUES "ON" "yes" "Yes" "YES" "true" "True" "TRUE")
@@ -72,11 +72,11 @@ set (Seastar_API_LEVEL
   "6"
   CACHE
   STRING
-  "Seastar compatibility API level (2=server_socket::accept() returns accept_result, 3=make_file_output_stream(), make_file_data_sink() returns future<...>, 4=when_all_succeed returns future<std::tuple<>>, 5=future<T>::get() returns T&&), 6=future is not variadic")
+  "Seastar compatibility API level (5=future<T>::get() returns T&&, 6=future is not variadic")
 
 set_property (CACHE Seastar_API_LEVEL
   PROPERTY
-  STRINGS 2 3 4 5 6)
+  STRINGS 6)
 
 set (Seastar_SCHEDULING_GROUPS_COUNT
   "16"
@@ -934,6 +934,7 @@ if (Seastar_DPDK)
   set (Seastar_ARCH_FOR_wsm "westmere")
   set (Seastar_ARCH_FOR_snb "sandybridge")
   set (Seastar_ARCH_FOR_ivb "ivybridge")
+  set (Seastar_ARCH_FOR_hsw "haswell")
   set (Seastar_ARCH_FOR_armv8a "armv8-a")
   set (Seastar_ARCH ${Seastar_ARCH_FOR_${Seastar_DPDK_MACHINE}})
 
@@ -984,10 +985,6 @@ if (Seastar_NUMA)
 
   target_link_libraries (seastar
     PRIVATE numactl::numactl)
-endif ()
-
-if (lz4_HAVE_COMPRESS_DEFAULT)
-  list (APPEND Seastar_PRIVATE_COMPILE_DEFINITIONS SEASTAR_HAVE_LZ4_COMPRESS_DEFAULT)
 endif ()
 
 seastar_supports_flag ("-Werror=unused-result" ErrorUnused_FOUND)
