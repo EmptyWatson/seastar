@@ -38,10 +38,10 @@ static logger iplog("unix_domain");
 
 class ud_server_client {
 public:
-    ud_server_client(string server_path, compat::optional<string> client_path, int rounds) :
+    ud_server_client(string server_path, std::optional<string> client_path, int rounds) :
         ud_server_client(server_path, client_path, rounds, 0) {};
 
-    ud_server_client(string server_path, compat::optional<string> client_path, int rounds,
+    ud_server_client(string server_path, std::optional<string> client_path, int rounds,
                      int abort_run) :
         server_addr{unix_domain_addr{server_path}}, client_path{client_path},
                     rounds{rounds},
@@ -54,10 +54,10 @@ public:
 private:
     const string test_message{"are you still the same?"s};
     future<> init_server();
-    future<> client_round();
+    void client_round();
     const socket_address server_addr;
 
-    const compat::optional<string> client_path;
+    const std::optional<string> client_path;
     server_socket server;
     const int rounds;
     int rounds_left;
@@ -83,7 +83,7 @@ future<> ud_server_client::init_server() {
                         break;
                     }
                 }
-                (void)client_round().get0();
+                client_round();
             } 
         });
 
@@ -125,23 +125,21 @@ future<> ud_server_client::init_server() {
 
 /// Send a message to the server, and expect (almost) the same string back.
 /// If 'client_path' is set, the client binds to the named path.
-future<> ud_server_client::client_round() {
+// Runs in a seastar::thread.
+void ud_server_client::client_round() {
     auto cc = client_path ? 
         engine().net().connect(server_addr, socket_address{unix_domain_addr{*client_path}}).get0() :
         engine().net().connect(server_addr).get0();
 
-    return do_with(cc.input(), cc.output(), [this](auto& inp, auto& out) {
+    auto inp = cc.input();
+    auto out = cc.output();
 
-        return out.write(test_message).then(
-            [&out](){ return out.flush(); }).then(
-            [&inp](){ return inp.read(); }).then(
-            [this,&inp](auto bb){
-                BOOST_REQUIRE_EQUAL(compat::string_view(bb.begin(), bb.size()), "+"s+test_message);
-                return inp.close();
-            }).then([&out](){return out.close();}).then(
-            []{ return make_ready_future<>(); });
-    });
-
+    out.write(test_message).get();
+    out.flush().get();
+    auto bb = inp.read().get0();
+    BOOST_REQUIRE_EQUAL(std::string_view(bb.begin(), bb.size()), "+"s+test_message);
+    inp.close().get();
+    out.close().get();
 }
 
 future<> ud_server_client::run() {
@@ -157,7 +155,7 @@ future<> ud_server_client::run() {
 
 SEASTAR_TEST_CASE(unixdomain_server) {
     system("rm -f /tmp/ry");
-    ud_server_client uds("/tmp/ry", compat::nullopt, 3);
+    ud_server_client uds("/tmp/ry", std::nullopt, 3);
     return do_with(std::move(uds), [](auto& uds){
         return uds.run();
     });
@@ -167,7 +165,7 @@ SEASTAR_TEST_CASE(unixdomain_server) {
 SEASTAR_TEST_CASE(unixdomain_abs) {
     char sv_name[]{'\0', '1', '1', '1'};
     //ud_server_client uds(string{"\0111",4}, string{"\0112",4}, 1);
-    ud_server_client uds(string{sv_name,4}, compat::nullopt, 4);
+    ud_server_client uds(string{sv_name,4}, std::nullopt, 4);
     return do_with(std::move(uds), [](auto& uds){
         return uds.run();
     });
@@ -212,7 +210,7 @@ SEASTAR_TEST_CASE(unixdomain_bind) {
 
 SEASTAR_TEST_CASE(unixdomain_short) {
     system("rm -f 3");
-    ud_server_client uds("3"s, compat::nullopt, 10);
+    ud_server_client uds("3"s, std::nullopt, 10);
     return do_with(std::move(uds), [](auto& uds){
         return uds.run();
     });
@@ -223,7 +221,7 @@ SEASTAR_TEST_CASE(unixdomain_short) {
 SEASTAR_TEST_CASE(unixdomain_abort) {
     std::string sockname{"7"s}; // note: no portable & warnings-free option
     std::ignore = ::unlink(sockname.c_str());
-    ud_server_client uds(sockname, compat::nullopt, 10, 4);
+    ud_server_client uds(sockname, std::nullopt, 10, 4);
     return do_with(std::move(uds), [sockname](auto& uds){
         return uds.run().finally([sockname](){
             std::ignore = ::unlink(sockname.c_str());

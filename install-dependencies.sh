@@ -40,10 +40,9 @@ debian_packages=(
     libgnutls28-dev
     liblz4-dev
     libsctp-dev
+    liburing-dev
     gcc
     make
-    libprotobuf-dev
-    protobuf-compiler
     python3
     systemtap-sdt-dev
     libtool
@@ -55,6 +54,9 @@ debian_packages=(
     libfmt-dev
     diffutils
     valgrind
+    doxygen
+    openssl
+    pkg-config
 )
 
 # seastar doesn't directly depend on these packages. They are
@@ -74,10 +76,10 @@ redhat_packages=(
     gnutls-devel
     lksctp-tools-devel
     lz4-devel
+    liburing-devel
     gcc
     make
-    protobuf-devel
-    protobuf-compiler
+    python3
     systemtap-sdt-devel
     libtool
     cmake
@@ -85,6 +87,11 @@ redhat_packages=(
     c-ares-devel
     stow
     diffutils
+    doxygen
+    openssl
+    fmt-devel
+    boost-devel
+    valgrind-devel
     "${transitive[@]}"
 )
 
@@ -101,15 +108,27 @@ fedora_packages=(
     valgrind-devel
 )
 
-centos_packages=(
+centos7_packages=(
     "${redhat_packages[@]}"
     ninja-build
     ragel
+    cmake3
     rh-mongodb36-boost-devel
-    devtoolset-8-gcc-c++
-    devtoolset-8-libubsan
-    devtoolset-8-libasan
-    devtoolset-8-libatomic
+    devtoolset-11-gcc-c++
+    devtoolset-11-libubsan
+    devtoolset-11-libasan
+    devtoolset-11-libatomic
+)
+
+centos8_packages=(
+    "${redhat_packages[@]}"
+    ninja-build
+    ragel
+    gcc-toolset-11-gcc
+    gcc-toolset-11-gcc-c++
+    gcc-toolset-11-libubsan-devel
+    gcc-toolset-11-libasan-devel
+    gcc-toolset-11-libatomic-devel
 )
 
 # 1) glibc 2.30-3 has sys/sdt.h (systemtap include)
@@ -135,7 +154,6 @@ arch_packages=(
     lksctp-tools
     lz4
     make
-    protobuf
     libtool
     cmake
     yaml-cpp
@@ -147,6 +165,7 @@ arch_packages=(
     glibc
     filesystem
     valgrind
+    openssl
 )
 
 opensuse_packages=(
@@ -175,33 +194,43 @@ opensuse_packages=(
     liblz4-devel
     libnuma-devel
     lksctp-tools-devel
-    ninja protobuf-devel
+    ninja
     ragel
     xfsprogs-devel
     yaml-cpp-devel
     libtool
     stow
+    openssl
 )
 
-if [ "$ID" = "ubuntu" ] || [ "$ID" = "debian" ]; then
-    apt-get install -y "${debian_packages[@]}"
-elif [ "$ID" = "centos" ] || [ "$ID" = "fedora" ]; then
-    if [ "$ID" = "fedora" ]; then
+case "$ID" in
+    ubuntu|debian|pop)
+        apt-get install -y "${debian_packages[@]}"
+    ;;
+    fedora)
         dnf install -y "${fedora_packages[@]}"
-    else # centos
-        yum install -y epel-release centos-release-scl scl-utils
-        yum install -y "${centos_packages[@]}" 
-    fi
-elif [ "$ID" = "arch" ]; then
-    # main
-    if [ "$EUID" -eq "0" ]; then
-        pacman -Sy --needed --noconfirm "${arch_packages[@]}"
-    else
-        echo "seastar: running without root. Skipping main dependencies (pacman)." 1>&2
-    fi
-elif [ "$ID" = "opensuse-leap" ]; then
-    zypper install -y "${opensuse_packages[@]}"
-else
-    echo "Your system ($ID) is not supported by this script. Please install dependencies manually."
-    exit 1
-fi
+    ;;
+    rhel|centos|rocky)
+        if [ "$VERSION_ID" = "7" ]; then
+            yum install -y epel-release centos-release-scl scl-utils
+            yum install -y "${centos7_packages[@]}"
+        elif [ "${VERSION_ID%%.*}" = "8" ]; then
+            dnf install -y epel-release
+            dnf install -y "${centos8_packages[@]}"
+        fi
+    ;;
+    opensuse-leap)
+        zypper install -y "${opensuse_packages[@]}"
+    ;;
+    arch|manjaro)
+        if [ "$EUID" -eq "0" ]; then
+            pacman -Sy --needed --noconfirm "${arch_packages[@]}"
+        else
+            echo "seastar: running without root. Skipping main dependencies (pacman)." 1>&2
+        fi
+    ;;
+    *)
+        echo "Your system ($ID) is not supported by this script. Please install dependencies manually."
+        exit 1
+    ;;
+esac

@@ -116,6 +116,10 @@ public:
     stream_closed() : error("rpc stream was closed by peer") {}
 };
 
+class remote_verb_error : public error {
+    using error::error;
+};
+
 struct no_wait_type {};
 
 // return this from a callback if client does not want to waiting for a reply
@@ -125,16 +129,16 @@ extern no_wait_type no_wait;
 /// @{
 
 template <typename T>
-class optional : public compat::optional<T> {
+class optional : public std::optional<T> {
 public:
-     using compat::optional<T>::optional;
+     using std::optional<T>::optional;
 };
 
-class opt_time_point : public compat::optional<rpc_clock_type::time_point> {
+class opt_time_point : public std::optional<rpc_clock_type::time_point> {
 public:
-     using compat::optional<rpc_clock_type::time_point>::optional;
-     opt_time_point(compat::optional<rpc_clock_type::time_point> time_point) {
-         static_cast<compat::optional<rpc_clock_type::time_point>&>(*this) = time_point;
+     using std::optional<rpc_clock_type::time_point>::optional;
+     opt_time_point(std::optional<rpc_clock_type::time_point> time_point) {
+         static_cast<std::optional<rpc_clock_type::time_point>&>(*this) = time_point;
      }
 };
 
@@ -178,8 +182,8 @@ struct cancellable {
 
 struct rcv_buf {
     uint32_t size = 0;
-    compat::optional<semaphore_units<>> su;
-    compat::variant<std::vector<temporary_buffer<char>>, temporary_buffer<char>> bufs;
+    std::optional<semaphore_units<>> su;
+    std::variant<std::vector<temporary_buffer<char>>, temporary_buffer<char>> bufs;
     using iterator = std::vector<temporary_buffer<char>>::iterator;
     rcv_buf() {}
     explicit rcv_buf(size_t size_) : size(size_) {}
@@ -192,9 +196,11 @@ struct snd_buf {
     // Preferred, but not required, chunk size.
     static constexpr size_t chunk_size = 128*1024;
     uint32_t size = 0;
-    compat::variant<std::vector<temporary_buffer<char>>, temporary_buffer<char>> bufs;
+    std::variant<std::vector<temporary_buffer<char>>, temporary_buffer<char>> bufs;
     using iterator = std::vector<temporary_buffer<char>>::iterator;
     snd_buf() {}
+    snd_buf(snd_buf&&) noexcept;
+    snd_buf& operator=(snd_buf&&) noexcept;
     explicit snd_buf(size_t size_);
     explicit snd_buf(temporary_buffer<char> b) : size(b.size()), bufs(std::move(b)) {};
 
@@ -205,11 +211,11 @@ struct snd_buf {
 };
 
 static inline memory_input_stream<rcv_buf::iterator> make_deserializer_stream(rcv_buf& input) {
-    auto* b = compat::get_if<temporary_buffer<char>>(&input.bufs);
+    auto* b = std::get_if<temporary_buffer<char>>(&input.bufs);
     if (b) {
         return memory_input_stream<rcv_buf::iterator>(memory_input_stream<rcv_buf::iterator>::simple(b->begin(), b->size()));
     } else {
-        auto& ar = compat::get<std::vector<temporary_buffer<char>>>(input.bufs);
+        auto& ar = std::get<std::vector<temporary_buffer<char>>>(input.bufs);
         return memory_input_stream<rcv_buf::iterator>(memory_input_stream<rcv_buf::iterator>::fragmented(ar.begin(), input.size));
     }
 }
@@ -221,7 +227,8 @@ public:
     virtual snd_buf compress(size_t head_space, snd_buf data) = 0;
     // decompress data
     virtual rcv_buf decompress(rcv_buf data) = 0;
-
+    virtual sstring name() const = 0;
+    
     // factory to create compressor for a connection
     class factory {
     public:
@@ -240,7 +247,7 @@ struct connection_id {
     bool operator==(const connection_id& o) const {
         return id == o.id;
     }
-    operator bool() const {
+    explicit operator bool() const {
         return shard() != 0xffff;
     }
     size_t shard() const {
@@ -317,7 +324,7 @@ public:
         }
     public:
         virtual ~impl() {}
-        virtual future<compat::optional<std::tuple<In...>>> operator()() = 0;
+        virtual future<std::optional<std::tuple<In...>>> operator()() = 0;
         friend source;
     };
 private:
@@ -325,7 +332,7 @@ private:
 
 public:
     source(shared_ptr<impl> impl) : _impl(std::move(impl)) {}
-    future<compat::optional<std::tuple<In...>>> operator()() {
+    future<std::optional<std::tuple<In...>>> operator()() {
         return _impl->operator()();
     };
     connection_id get_id() const;
@@ -355,12 +362,8 @@ public:
 
 /// @}
 
-#if __cplusplus >= 201703L
-
 template <typename... T>
 tuple(T&&...) ->  tuple<T...>;
-
-#endif
 
 } // namespace rpc
 
@@ -385,3 +388,7 @@ struct tuple_element<I, seastar::rpc::tuple<T...>> : tuple_element<I, tuple<T...
 };
 
 }
+
+#if FMT_VERSION >= 90000
+template <> struct fmt::formatter<seastar::rpc::connection_id> : fmt::ostream_formatter {};
+#endif

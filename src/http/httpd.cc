@@ -24,7 +24,7 @@
 #include <seastar/core/circular_buffer.hh>
 #include <seastar/core/distributed.hh>
 #include <seastar/core/queue.hh>
-#include <seastar/core/future-util.hh>
+#include <seastar/core/when_all.hh>
 #include <seastar/core/metrics.hh>
 #include <seastar/core/print.hh>
 #include <iostream>
@@ -36,11 +36,16 @@
 #include <cctype>
 #include <vector>
 #include <seastar/http/httpd.hh>
+#include <seastar/http/internal/content_source.hh>
 #include <seastar/http/reply.hh>
+#include <seastar/util/short_streams.hh>
+#include <seastar/util/log.hh>
 
 using namespace std::chrono_literals;
 
 namespace seastar {
+
+logger hlogger("httpd");
 
 namespace httpd {
 http_stats::http_stats(http_server& server, const sstring& name)
@@ -50,11 +55,11 @@ http_stats::http_stats(http_server& server, const sstring& name)
 
     labels.push_back(sm::label_instance("service", name));
     _metric_groups.add_group("httpd", {
-            sm::make_derive("connections_total", [&server] { return server.total_connections(); }, sm::description("The total number of connections opened"), labels),
+            sm::make_counter("connections_total", [&server] { return server.total_connections(); }, sm::description("The total number of connections opened"), labels),
             sm::make_gauge("connections_current", [&server] { return server.current_connections(); }, sm::description("The current number of open  connections"), labels),
-            sm::make_derive("read_errors", [&server] { return server.read_errors(); }, sm::description("The total number of errors while reading http requests"), labels),
-            sm::make_derive("reply_errors", [&server] { return server.reply_errors(); }, sm::description("The total number of errors while replying to http"), labels),
-            sm::make_derive("requests_served", [&server] { return server.requests_served(); }, sm::description("The total number of http requests served"), labels)
+            sm::make_counter("read_errors", [&server] { return server.read_errors(); }, sm::description("The total number of errors while reading http requests"), labels),
+            sm::make_counter("reply_errors", [&server] { return server.reply_errors(); }, sm::description("The total number of errors while replying to http"), labels),
+            sm::make_counter("requests_served", [&server] { return server.requests_served(); }, sm::description("The total number of http requests served"), labels)
     });
 }
 
@@ -65,7 +70,7 @@ sstring http_server_control::generate_server_name() {
 
 future<> connection::do_response_loop() {
     return _replies.pop_eventually().then(
-        [this] (std::unique_ptr<reply> resp) {
+        [this] (std::unique_ptr<http::reply> resp) {
             if (!resp) {
                 // eof
                 return make_ready_future<>();
@@ -85,7 +90,7 @@ future<> connection::start_response() {
                 _server._respond_errors++;
                 _done = true;
                 _replies.abort(std::make_exception_ptr(std::logic_error("Unknown exception during body creation")));
-                _replies.push(std::unique_ptr<reply>());
+                _replies.push(std::unique_ptr<http::reply>());
                 f.ignore_ready_future();
                 return make_ready_future<>();
             }
@@ -97,7 +102,7 @@ future<> connection::start_response() {
                 // we should close it, so the client will disconnect
                 _done = true;
                 _replies.abort(std::make_exception_ptr(std::logic_error("Unknown exception during body creation")));
-                _replies.push(std::unique_ptr<reply>());
+                _replies.push(std::unique_ptr<http::reply>());
                 f.ignore_ready_future();
                 return make_ready_future<>();
             } else {
@@ -108,7 +113,7 @@ future<> connection::start_response() {
                 // flush failed. just close the connection
                 _done = true;
                 _replies.abort(std::make_exception_ptr(std::logic_error("Unknown exception during body creation")));
-                _replies.push(std::unique_ptr<reply>());
+                _replies.push(std::unique_ptr<http::reply>());
                 f.ignore_ready_future();
             }
             _resp.reset();
@@ -135,34 +140,12 @@ future<> connection::start_response() {
 connection::~connection() {
     --_server._current_connections;
     _server._connections.erase(_server._connections.iterator_to(*this));
-    _server.maybe_idle();
-}
-
-bool connection::url_decode(const compat::string_view& in, sstring& out) {
-    size_t pos = 0;
-    sstring buff(in.length(), 0);
-    for (size_t i = 0; i < in.length(); ++i) {
-        if (in[i] == '%') {
-            if (i + 3 <= in.size()) {
-                buff[pos++] = hexstr_to_char(in, i + 1);
-                i += 2;
-            } else {
-                return false;
-            }
-        } else if (in[i] == '+') {
-            buff[pos++] = ' ';
-        } else {
-            buff[pos++] = in[i];
-        }
-    }
-    buff.resize(pos);
-    out = buff;
-    return true;
 }
 
 void connection::on_new_connection() {
     ++_server._total_connections;
     ++_server._current_connections;
+    _fd.set_nodelay(true);
     _server._connections.push_back(*this);
 }
 
@@ -181,29 +164,32 @@ future<> connection::read() {
     });
 }
 
-// Check if the request has a body, and if so read it. This function modifies
-// the request object with the newly read body, and returns the object for
-// further processing.
-// FIXME: reading the entire request body into a string req->_content is a
-// bad idea, because it may be very big. Instead, we should present to the
-// handler a req->_content_stream, an input stream that reads from the request
-// body - via a specialized input streams which reads exactly up to
-// Content-Length or decodes chunked-encoding.
-// FIXME: We currently support the case that there is a "Content-Length:"
-// header - chunked encoding is not yet supported.
-static future<std::unique_ptr<httpd::request>>
-read_request_body(input_stream<char>& buf, std::unique_ptr<httpd::request> req) {
-    if (!req->content_length) {
-        return make_ready_future<std::unique_ptr<httpd::request>>(std::move(req));
+static input_stream<char> make_content_stream(http::request* req, input_stream<char>& buf) {
+    // Create an input stream based on the requests body encoding or lack thereof
+    if (http::request::case_insensitive_cmp()(req->get_header("Transfer-Encoding"), "chunked")) {
+        return input_stream<char>(data_source(std::make_unique<internal::chunked_source_impl>(buf, req->chunk_extensions, req->trailing_headers)));
+    } else {
+        return input_stream<char>(data_source(std::make_unique<internal::content_length_source_impl>(buf, req->content_length)));
     }
-    return buf.read_exactly(req->content_length).then([req = std::move(req)] (temporary_buffer<char> body) mutable {
-        req->content = seastar::to_sstring(std::move(body));
-        return make_ready_future<std::unique_ptr<httpd::request>>(std::move(req));
-    });
 }
 
-void connection::generate_error_reply_and_close(std::unique_ptr<httpd::request> req, reply::status_type status, const sstring& msg) {
-    auto resp = std::make_unique<reply>();
+static future<std::unique_ptr<http::request>>
+set_request_content(std::unique_ptr<http::request> req, input_stream<char>* content_stream, bool streaming) {
+    req->content_stream = content_stream;
+
+    if (streaming) {
+        return make_ready_future<std::unique_ptr<http::request>>(std::move(req));
+    } else {
+        // Read the entire content into the request content string
+        return util::read_entire_stream_contiguous(*content_stream).then([req = std::move(req)] (sstring content) mutable {
+            req->content = std::move(content);
+            return make_ready_future<std::unique_ptr<http::request>>(std::move(req));
+        });
+    }
+}
+
+void connection::generate_error_reply_and_close(std::unique_ptr<http::request> req, http::reply::status_type status, const sstring& msg) {
+    auto resp = std::make_unique<http::reply>();
     // TODO: Handle HTTP/2.0 when it releases
     resp->set_version(req->_version);
     resp->set_status(status, msg);
@@ -220,9 +206,17 @@ future<> connection::read_one() {
             return make_ready_future<>();
         }
         ++_server._requests_served;
-        std::unique_ptr<httpd::request> req = _parser.get_parsed_request();
+        std::unique_ptr<http::request> req = _parser.get_parsed_request();
         if (_server._credentials) {
             req->protocol_name = "https";
+        }
+        if (_parser.failed()) {
+            if (req->_version.empty()) {
+                // we might have failed to parse even the version
+                req->_version = "1.1";
+            }
+            generate_error_reply_and_close(std::move(req), http::reply::status_type::bad_request, "Can't parse the request");
+            return make_ready_future<>();
         }
 
         size_t content_length_limit = _server.get_content_length_limit();
@@ -231,17 +225,86 @@ future<> connection::read_one() {
 
         if (req->content_length > content_length_limit) {
             auto msg = format("Content length limit ({}) exceeded: {}", content_length_limit, req->content_length);
-            generate_error_reply_and_close(std::move(req), reply::status_type::payload_too_large, std::move(msg));
+            generate_error_reply_and_close(std::move(req), http::reply::status_type::payload_too_large, std::move(msg));
             return make_ready_future<>();
         }
-        return read_request_body(_read_buf, std::move(req)).then([this] (std::unique_ptr<httpd::request> req) {
-            return _replies.not_full().then([req = std::move(req), this] () mutable {
-                return generate_reply(std::move(req));
-            }).then([this](bool done) {
-                _done = done;
+
+        sstring encoding = req->get_header("Transfer-Encoding");
+        if (encoding.size() && !http::request::case_insensitive_cmp()(encoding, "chunked")){
+            //TODO: add "identity", "gzip"("x-gzip"), "compress"("x-compress"), and "deflate" encodings and their combinations
+            generate_error_reply_and_close(std::move(req), http::reply::status_type::not_implemented, format("Encodings other than \"chunked\" are not implemented (received encoding: \"{}\")", encoding));
+            return make_ready_future<>();
+        }
+
+        auto maybe_reply_continue = [this, req = std::move(req)] () mutable {
+            if (req->_version == "1.1" && http::request::case_insensitive_cmp()(req->get_header("Expect"), "100-continue")){
+                return _replies.not_full().then([req = std::move(req), this] () mutable {
+                    auto continue_reply = std::make_unique<http::reply>();
+                    set_headers(*continue_reply);
+                    continue_reply->set_version(req->_version);
+                    continue_reply->set_status(http::reply::status_type::continue_).done();
+                    this->_replies.push(std::move(continue_reply));
+                    return make_ready_future<std::unique_ptr<http::request>>(std::move(req));
+                });
+            } else {
+                return make_ready_future<std::unique_ptr<http::request>>(std::move(req));
+            }
+        };
+
+        return maybe_reply_continue().then([this] (std::unique_ptr<http::request> req) {
+            return do_with(make_content_stream(req.get(), _read_buf), sstring(req->_version), std::move(req), [this] (input_stream<char>& content_stream, sstring& version, std::unique_ptr<http::request>& req) {
+                return set_request_content(std::move(req), &content_stream, _server.get_content_streaming()).then([this, &content_stream] (std::unique_ptr<http::request> req) {
+                    return _replies.not_full().then([this, req = std::move(req)] () mutable {
+                        return generate_reply(std::move(req));
+                    }).then([this, &content_stream](bool done) {
+                        _done = done;
+                        // If the handler did not read the entire request
+                        // content, this connection cannot be reused so we
+                        // need to close it (via "_done = true"). But we can't
+                        // just check content_stream.eof(): It may only become
+                        // true after read(). Issue #907.
+                        return content_stream.read().then([this] (temporary_buffer<char> buf) {
+                            if (!buf.empty()) {
+                                _done = true;
+                            }
+                        });
+                    });
+                }).handle_exception_type([this, &version] (const base_exception& e) mutable {
+                    // If the request had a "Transfer-Encoding: chunked" header and content streaming wasn't enabled, we might have failed
+                    // before passing the request to handler - when we were parsing chunks
+                    auto err_req = std::make_unique<http::request>();
+                    err_req->_version = version;
+                    generate_error_reply_and_close(std::move(err_req), e.status(), e.str());
+                });
             });
         });
     });
+}
+
+future<> connection::process() {
+    // Launch read and write "threads" simultaneously:
+    return when_all(read(), respond()).then(
+            [] (std::tuple<future<>, future<>> joined) {
+        try {
+            std::get<0>(joined).get();
+        } catch (...) {
+            hlogger.debug("Read exception encountered: {}", std::current_exception());
+        }
+        try {
+            std::get<1>(joined).get();
+        } catch (...) {
+            hlogger.debug("Response exception encountered: {}", std::current_exception());
+        }
+        return make_ready_future<>();
+    });
+}
+void connection::shutdown() {
+    _fd.shutdown_input();
+    _fd.shutdown_output();
+}
+
+output_stream<char>& connection::out() {
+    return _write_buf;
 }
 
 future<> connection::respond() {
@@ -260,48 +323,120 @@ future<> connection::write_body() {
             _resp->_content.size());
 }
 
-void connection::set_headers(reply& resp) {
+void connection::set_headers(http::reply& resp) {
     resp._headers["Server"] = "Seastar httpd";
     resp._headers["Date"] = _server._date;
 }
 
-future<bool> connection::generate_reply(std::unique_ptr<request> req) {
-    auto resp = std::make_unique<reply>();
-    bool conn_keep_alive = false;
-    bool conn_close = false;
-    auto it = req->_headers.find("Connection");
-    if (it != req->_headers.end()) {
-        if (it->second == "Keep-Alive") {
-            conn_keep_alive = true;
-        } else if (it->second == "Close") {
-            conn_close = true;
-        }
-    }
-    bool should_close;
-    // TODO: Handle HTTP/2.0 when it releases
+future<bool> connection::generate_reply(std::unique_ptr<http::request> req) {
+    auto resp = std::make_unique<http::reply>();
     resp->set_version(req->_version);
-
-    if (req->_version == "1.0") {
-        if (conn_keep_alive) {
-            resp->_headers["Connection"] = "Keep-Alive";
-        }
-        should_close = !conn_keep_alive;
-    } else if (req->_version == "1.1") {
-        should_close = conn_close;
-    } else {
-        // HTTP/0.9 goes here
-        should_close = true;
-    }
-    sstring url = set_query_param(*req.get());
-    sstring version = req->_version;
     set_headers(*resp);
+    bool keep_alive = req->should_keep_alive();
+    if (keep_alive && req->_version == "1.0") {
+        resp->_headers["Connection"] = "Keep-Alive";
+    }
+
+    sstring url = req->parse_query_param();
+    sstring version = req->_version;
     return _server._routes.handle(url, std::move(req), std::move(resp)).
     // Caller guarantees enough room
-    then([this, should_close, version = std::move(version)](std::unique_ptr<reply> rep) {
+    then([this, keep_alive , version = std::move(version)](std::unique_ptr<http::reply> rep) {
         rep->set_version(version).done();
         this->_replies.push(std::move(rep));
-        return make_ready_future<bool>(should_close);
+        return make_ready_future<bool>(!keep_alive);
     });
+}
+
+void http_server::set_tls_credentials(shared_ptr<seastar::tls::server_credentials> credentials) {
+    _credentials = credentials;
+}
+
+size_t http_server::get_content_length_limit() const {
+    return _content_length_limit;
+}
+
+void http_server::set_content_length_limit(size_t limit) {
+    _content_length_limit = limit;
+}
+
+bool http_server::get_content_streaming() const {
+    return _content_streaming;
+}
+
+void http_server::set_content_streaming(bool b) {
+    _content_streaming = b;
+}
+
+future<> http_server::listen(socket_address addr, listen_options lo) {
+    if (_credentials) {
+        _listeners.push_back(seastar::tls::listen(_credentials, addr, lo));
+    } else {
+        _listeners.push_back(seastar::listen(addr, lo));
+    }
+    return do_accepts(_listeners.size() - 1);
+}
+future<> http_server::listen(socket_address addr) {
+    listen_options lo;
+    lo.reuse_address = true;
+    return listen(addr, lo);
+}
+future<> http_server::stop() {
+    future<> tasks_done = _task_gate.close();
+    for (auto&& l : _listeners) {
+        l.abort_accept();
+    }
+    for (auto&& c : _connections) {
+        c.shutdown();
+    }
+    return tasks_done;
+}
+
+// FIXME: This could return void
+future<> http_server::do_accepts(int which) {
+    (void)try_with_gate(_task_gate, [this, which] {
+        return keep_doing([this, which] {
+            return try_with_gate(_task_gate, [this, which] {
+                return do_accept_one(which);
+            });
+        }).handle_exception_type([](const gate_closed_exception& e) {});
+    }).handle_exception_type([](const gate_closed_exception& e) {});
+    return make_ready_future<>();
+}
+
+future<> http_server::do_accept_one(int which) {
+    return _listeners[which].accept().then([this] (accept_result ar) mutable {
+        auto conn = std::make_unique<connection>(*this, std::move(ar.connection), std::move(ar.remote_address));
+        (void)try_with_gate(_task_gate, [conn = std::move(conn)]() mutable {
+            return conn->process().handle_exception([conn = std::move(conn)] (std::exception_ptr ex) {
+                hlogger.error("request error: {}", ex);
+            });
+        }).handle_exception_type([] (const gate_closed_exception& e) {});
+    }).handle_exception_type([] (const std::system_error &e) {
+        // We expect a ECONNABORTED when http_server::stop is called,
+        // no point in warning about that.
+        if (e.code().value() != ECONNABORTED) {
+            hlogger.error("accept failed: {}", e);
+        }
+    }).handle_exception([] (std::exception_ptr ex) {
+        hlogger.error("accept failed: {}", ex);
+    });
+}
+
+uint64_t http_server::total_connections() const {
+    return _total_connections;
+}
+uint64_t http_server::current_connections() const {
+    return _current_connections;
+}
+uint64_t http_server::requests_served() const {
+    return _requests_served;
+}
+uint64_t http_server::read_errors() const {
+    return _read_errors;
+}
+uint64_t http_server::reply_errors() const {
+    return _respond_errors;
 }
 
 // Write the current date in the specific "preferred format" defined in
@@ -323,6 +458,33 @@ sstring http_server::http_date() {
     return seastar::format("{}, {:02d} {} {} {:02d}:{:02d}:{:02d} GMT",
         days[tm.tm_wday], tm.tm_mday, months[tm.tm_mon], 1900 + tm.tm_year,
         tm.tm_hour, tm.tm_min, tm.tm_sec);
+}
+
+
+future<> http_server_control::start(const sstring& name) {
+    return _server_dist->start(name);
+}
+
+future<> http_server_control::stop() {
+    return _server_dist->stop();
+}
+
+future<> http_server_control::set_routes(std::function<void(routes& r)> fun) {
+    return _server_dist->invoke_on_all([fun](http_server& server) {
+        fun(server._routes);
+    });
+}
+
+future<> http_server_control::listen(socket_address addr) {
+    return _server_dist->invoke_on_all<future<> (http_server::*)(socket_address)>(&http_server::listen, addr);
+}
+
+future<> http_server_control::listen(socket_address addr, listen_options lo) {
+    return _server_dist->invoke_on_all<future<> (http_server::*)(socket_address, listen_options)>(&http_server::listen, addr, lo);
+}
+
+distributed<http_server>& http_server_control::server() {
+    return *_server_dist;
 }
 
 }

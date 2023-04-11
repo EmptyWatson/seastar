@@ -28,7 +28,6 @@
 
 #include <boost/program_options/variables_map.hpp>
 #include <unordered_map>
-#include <seastar/core/future-util.hh>
 
 namespace seastar {
 
@@ -88,13 +87,7 @@ public:
      * @param handler the desire handler
      * @return it self
      */
-    routes& put(operation_type type, const sstring& url,
-            handler_base* handler) {
-        //FIXME if a handler is already exists, it need to be
-        // deleted to prevent memory leak
-        _map[type][url] = handler;
-        return *this;
-    }
+    routes& put(operation_type type, const sstring& url, handler_base* handler);
 
     /**
      * removing a handler from exact match
@@ -128,6 +121,14 @@ public:
     routes& add(operation_type type, const url& url, handler_base* handler);
 
     /**
+     * Add a default handler - handles any HTTP Method and Path (/\*) combination:
+     * Example  routes.add_default_handler(handler);
+     * @param handler
+     * @return
+     */
+    routes& add_default_handler(handler_base* handler);
+
+    /**
      * the main entry point.
      * the general handler calls this method with the request
      * the method takes the headers from the request and find the
@@ -137,7 +138,7 @@ public:
      * @param req the http request
      * @param rep the http reply
      */
-    future<std::unique_ptr<reply> > handle(const sstring& path, std::unique_ptr<request> req, std::unique_ptr<reply> rep);
+    future<std::unique_ptr<http::reply> > handle(const sstring& path, std::unique_ptr<http::request> req, std::unique_ptr<http::reply> rep);
 
     /**
      * Search and return an exact match
@@ -175,8 +176,10 @@ public:
 private:
     rule_cookie _rover = 0;
     std::map<rule_cookie, match_rule*> _rules[NUM_OPERATION];
+    //default Handler -- for any HTTP Method and Path (/*)
+    handler_base* _default_handler = nullptr;
 public:
-    using exception_handler_fun = std::function<std::unique_ptr<reply>(std::exception_ptr eptr)>;
+    using exception_handler_fun = std::function<std::unique_ptr<http::reply>(std::exception_ptr eptr)>;
     using exception_handler_id = size_t;
 private:
     std::map<exception_handler_id, exception_handler_fun> _exceptions;
@@ -201,7 +204,7 @@ public:
         _exceptions.erase(id);
     }
 
-    std::unique_ptr<reply> exception_reply(std::exception_ptr eptr);
+    std::unique_ptr<http::reply> exception_reply(std::exception_ptr eptr);
 
     routes();
 
@@ -240,7 +243,7 @@ public:
  * @param params the parameters object
  * @param param the parameter to look for
  */
-void verify_param(const httpd::request& req, const sstring& param);
+void verify_param(const http::request& req, const sstring& param);
 
 /**
  * The handler_registration object facilitates registration and auto
@@ -255,9 +258,9 @@ public:
     /**
      * Registers the handler_base into routes with routes::put
      * @param rs the routes object reference
-     * @param handler the desire handler
+     * @param h the desire handler
      * @param url the url to match
-     * @param type the operation type
+     * @param op the operation type (`GET` by default)
      */
     handler_registration(routes& rs, handler_base& h, const sstring& url, operation_type op = GET);
 
@@ -281,9 +284,9 @@ public:
      * Registers the match_rule into routes with routes::add_cookie
      * @param rs the routes object reference
      * @param rule a rule to add
-     * @param type the operation type
+     * @param op the operation type (`GET` by default)
      */
-    rule_registration(routes& rs, match_rule& rule, operation_type = GET);
+    rule_registration(routes& rs, match_rule& rule, operation_type op = GET);
 
     /**
      * Unregisters the rule from routes with routes::del_cookie

@@ -57,7 +57,7 @@ void parallel_for_each_state::wait_for_one() noexcept {
 
     // If there's an incompelete future, wait for it.
     if (!_incomplete.empty()) {
-        internal::set_callback(_incomplete.back(), static_cast<continuation_base<>*>(this));
+        internal::set_callback(std::move(_incomplete.back()), static_cast<continuation_base<>*>(this));
         // This future's state will be collected in run_and_dispose(), so we can drop it.
         _incomplete.pop_back();
         return;
@@ -103,9 +103,9 @@ future<> sleep_abortable(typename Clock::duration dur, abort_source& as) {
 
         sleeper(typename Clock::duration dur, abort_source& as)
                 : tmr([this] { done.set_value(); }) {
-            auto sc_opt = as.subscribe([this] {
+            auto sc_opt = as.subscribe([this] (const std::optional<std::exception_ptr>& opt_ex) noexcept {
                 if (tmr.cancel()) {
-                    done.set_exception(sleep_aborted());
+                    done.set_exception(opt_ex.value_or(std::make_exception_ptr(sleep_aborted())));
                 }
             });
             if (sc_opt) {
@@ -124,11 +124,5 @@ future<> sleep_abortable(typename Clock::duration dur, abort_source& as) {
 
 template future<> sleep_abortable<steady_clock_type>(typename steady_clock_type::duration, abort_source&);
 template future<> sleep_abortable<lowres_clock>(typename lowres_clock::duration, abort_source&);
-
-named_semaphore_timed_out::named_semaphore_timed_out(compat::string_view msg) : _msg(format("Semaphore timed out: {}", msg)) {
-}
-
-broken_named_semaphore::broken_named_semaphore(compat::string_view msg) : _msg(format("Semaphore broken: {}", msg)) {
-}
 
 }

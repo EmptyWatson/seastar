@@ -142,8 +142,9 @@ protected:
     enable_lw_shared_from_this& operator=(const enable_lw_shared_from_this&) noexcept { return *this; }
     enable_lw_shared_from_this& operator=(enable_lw_shared_from_this&&) noexcept { return *this; }
 public:
-    lw_shared_ptr<T> shared_from_this();
-    lw_shared_ptr<const T> shared_from_this() const;
+    lw_shared_ptr<T> shared_from_this() noexcept;
+    lw_shared_ptr<const T> shared_from_this() const noexcept;
+    long use_count() const noexcept { return _count; }
 
     template <typename X>
     friend class lw_shared_ptr;
@@ -154,14 +155,14 @@ public:
 };
 
 template <typename T>
-struct shared_ptr_no_esft : private lw_shared_ptr_counter_base {
+struct lw_shared_ptr_no_esft : private lw_shared_ptr_counter_base {
     T _value;
 
-    shared_ptr_no_esft() = default;
-    shared_ptr_no_esft(const T& x) : _value(x) {}
-    shared_ptr_no_esft(T&& x) : _value(std::move(x)) {}
+    lw_shared_ptr_no_esft() = default;
+    lw_shared_ptr_no_esft(const T& x) : _value(x) {}
+    lw_shared_ptr_no_esft(T&& x) : _value(std::move(x)) {}
     template <typename... A>
-    shared_ptr_no_esft(A&&... a) : _value(std::forward<A>(a)...) {}
+    lw_shared_ptr_no_esft(A&&... a) : _value(std::forward<A>(a)...) {}
 
     template <typename X>
     friend class lw_shared_ptr;
@@ -197,7 +198,7 @@ struct lw_shared_ptr_accessors_esft {
     static void dispose(T* value_ptr) {
         delete value_ptr;
     }
-    static void instantiate_to_value(lw_shared_ptr_counter_base* p) {
+    static void instantiate_to_value(lw_shared_ptr_counter_base*) {
         // since to_value() is defined above, we don't need to do anything special
         // to force-instantiate it
     }
@@ -205,7 +206,7 @@ struct lw_shared_ptr_accessors_esft {
 
 template <typename T>
 struct lw_shared_ptr_accessors_no_esft {
-    using concrete_type = shared_ptr_no_esft<T>;
+    using concrete_type = lw_shared_ptr_no_esft<T>;
     static T* to_value(lw_shared_ptr_counter_base* counter) {
         return &static_cast<concrete_type*>(counter)->_value;
     }
@@ -215,7 +216,7 @@ struct lw_shared_ptr_accessors_no_esft {
     static void dispose(T* value_ptr) {
         delete boost::intrusive::get_parent_from_member(value_ptr, &concrete_type::_value);
     }
-    static void instantiate_to_value(lw_shared_ptr_counter_base* p) {
+    static void instantiate_to_value(lw_shared_ptr_counter_base*) {
         // since to_value() is defined above, we don't need to do anything special
         // to force-instantiate it
     }
@@ -252,8 +253,9 @@ struct lw_shared_ptr_accessors<T, void_t<decltype(lw_shared_ptr_deleter<T>{})>> 
 
 template <typename T>
 class lw_shared_ptr {
-    using accessors = internal::lw_shared_ptr_accessors<std::remove_const_t<T>>;
-    using concrete_type = typename accessors::concrete_type;
+    template <typename U>
+    using accessors = internal::lw_shared_ptr_accessors<std::remove_const_t<U>>;
+
     mutable lw_shared_ptr_counter_base* _p = nullptr;
 private:
     lw_shared_ptr(lw_shared_ptr_counter_base* p) noexcept : _p(p) {
@@ -263,8 +265,8 @@ private:
     }
     template <typename... A>
     static lw_shared_ptr make(A&&... a) {
-        auto p = new concrete_type(std::forward<A>(a)...);
-        accessors::instantiate_to_value(p);
+        auto p = new typename accessors<T>::concrete_type(std::forward<A>(a)...);
+        accessors<T>::instantiate_to_value(p);
         return lw_shared_ptr(p);
     }
 public:
@@ -273,7 +275,7 @@ public:
     // Destroys the object pointed to by p and disposes of its storage.
     // The pointer to the object must have been obtained through release().
     static void dispose(T* p) noexcept {
-        accessors::dispose(const_cast<std::remove_const_t<T>*>(p));
+        accessors<T>::dispose(const_cast<std::remove_const_t<T>*>(p));
     }
 
     // A functor which calls dispose().
@@ -297,7 +299,7 @@ public:
     [[gnu::always_inline]]
     ~lw_shared_ptr() {
         if (_p && !--_p->_count) {
-            accessors::dispose(_p);
+            accessors<T>::dispose(_p);
         }
     }
     lw_shared_ptr& operator=(const lw_shared_ptr& x) noexcept {
@@ -323,11 +325,11 @@ public:
         return *this;
     }
 
-    T& operator*() const noexcept { return *accessors::to_value(_p); }
-    T* operator->() const noexcept { return accessors::to_value(_p); }
+    T& operator*() const noexcept { return *accessors<T>::to_value(_p); }
+    T* operator->() const noexcept { return accessors<T>::to_value(_p); }
     T* get() const noexcept {
         if (_p) {
-            return accessors::to_value(_p);
+            return accessors<T>::to_value(_p);
         } else {
             return nullptr;
         }
@@ -346,7 +348,7 @@ public:
         if (--p->_count) {
             return nullptr;
         } else {
-            return std::unique_ptr<T, disposer>(accessors::to_value(p));
+            return std::unique_ptr<T, disposer>(accessors<T>::to_value(p));
         }
     }
 
@@ -431,14 +433,14 @@ lw_shared_ptr<T> make_lw_shared(T& a) {
 template <typename T>
 inline
 lw_shared_ptr<T>
-enable_lw_shared_from_this<T>::shared_from_this() {
+enable_lw_shared_from_this<T>::shared_from_this() noexcept {
     return lw_shared_ptr<T>(this);
 }
 
 template <typename T>
 inline
 lw_shared_ptr<const T>
-enable_lw_shared_from_this<T>::shared_from_this() const {
+enable_lw_shared_from_this<T>::shared_from_this() const noexcept {
     return lw_shared_ptr<const T>(const_cast<enable_lw_shared_from_this*>(this));
 }
 
@@ -469,8 +471,9 @@ struct shared_ptr_count_for : shared_ptr_count_base {
 template <typename T>
 class enable_shared_from_this : private shared_ptr_count_base {
 public:
-    shared_ptr<T> shared_from_this();
-    shared_ptr<const T> shared_from_this() const;
+    shared_ptr<T> shared_from_this() noexcept;
+    shared_ptr<const T> shared_from_this() const noexcept;
+    long use_count() const noexcept { return count; }
 
     template <typename U>
     friend class shared_ptr;
@@ -680,7 +683,7 @@ const_pointer_cast(const shared_ptr<U>& p) {
 template <typename T>
 inline
 shared_ptr<T>
-enable_shared_from_this<T>::shared_from_this() {
+enable_shared_from_this<T>::shared_from_this() noexcept {
     auto unconst = reinterpret_cast<enable_shared_from_this<std::remove_const_t<T>>*>(this);
     return shared_ptr<T>(unconst);
 }
@@ -688,7 +691,7 @@ enable_shared_from_this<T>::shared_from_this() {
 template <typename T>
 inline
 shared_ptr<const T>
-enable_shared_from_this<T>::shared_from_this() const {
+enable_shared_from_this<T>::shared_from_this() const noexcept {
     auto esft = const_cast<enable_shared_from_this*>(this);
     auto unconst = reinterpret_cast<enable_shared_from_this<std::remove_const_t<T>>*>(esft);
     return shared_ptr<const T>(unconst);

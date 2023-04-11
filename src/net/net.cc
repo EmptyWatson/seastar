@@ -32,14 +32,13 @@
 
 namespace seastar {
 
-std::ostream& operator<<(std::ostream &os, ipv4_addr addr) {
-    fmt_print(os, "{:d}.{:d}.{:d}.{:d}",
-            (addr.ip >> 24) & 0xff,
-            (addr.ip >> 16) & 0xff,
-            (addr.ip >> 8) & 0xff,
-            (addr.ip) & 0xff);
-    return os << ":" << addr.port;
-}
+static_assert(std::is_nothrow_default_constructible_v<ipv4_addr>);
+static_assert(std::is_nothrow_copy_constructible_v<ipv4_addr>);
+static_assert(std::is_nothrow_move_constructible_v<ipv4_addr>);
+
+static_assert(std::is_nothrow_default_constructible_v<ipv6_addr>);
+static_assert(std::is_nothrow_copy_constructible_v<ipv6_addr>);
+static_assert(std::is_nothrow_move_constructible_v<ipv6_addr>);
 
 using std::move;
 
@@ -63,11 +62,11 @@ ipv4_addr::ipv4_addr(const net::inet_address& a, uint16_t port)
     : ipv4_addr(::in_addr(a), port)
 {}
 
-ipv4_addr::ipv4_addr(const socket_address &sa)
+ipv4_addr::ipv4_addr(const socket_address &sa) noexcept
     : ipv4_addr(sa.addr(), sa.port())
 {}
 
-ipv4_addr::ipv4_addr(const ::in_addr& in, uint16_t p)
+ipv4_addr::ipv4_addr(const ::in_addr& in, uint16_t p) noexcept
     : ip(net::ntoh(in.s_addr)), port(p)
 {}
 
@@ -112,18 +111,18 @@ qp::qp(bool register_copy_stats,
         //
         // Packets rate: DERIVE:0:u
         //
-        sm::make_derive(_queue_name + "_rx_packets", _stats.rx.good.packets,
+        sm::make_counter(_queue_name + "_rx_packets", _stats.rx.good.packets,
                         sm::description("This metric is a receive packet rate for this queue.")),
 
-        sm::make_derive(_queue_name + "_tx_packets", _stats.tx.good.packets,
+        sm::make_counter(_queue_name + "_tx_packets", _stats.tx.good.packets,
                         sm::description("This metric is a transmit packet rate for this queue.")),
         //
         // Bytes rate: DERIVE:0:U
         //
-        sm::make_derive(_queue_name + "_rx_bytes", _stats.rx.good.bytes,
+        sm::make_counter(_queue_name + "_rx_bytes", _stats.rx.good.bytes,
                         sm::description("This metric is a receive throughput for this queue.")),
 
-        sm::make_derive(_queue_name + "_tx_bytes", _stats.tx.good.bytes,
+        sm::make_counter(_queue_name + "_tx_bytes", _stats.tx.good.bytes,
                         sm::description("This metric is a transmit throughput for this queue.")),
         //
         // Queue length: GAUGE:0:U
@@ -136,7 +135,7 @@ qp::qp(bool register_copy_stats,
         //
         // Linearization counter: DERIVE:0:U
         //
-        sm::make_derive(_queue_name + "_xmit_linearized", _stats.tx.linearized,
+        sm::make_counter(_queue_name + "_xmit_linearized", _stats.tx.linearized,
                         sm::description("Counts a number of linearized Tx packets. High value indicates that we send too fragmented packets.")),
 
         //
@@ -154,10 +153,10 @@ qp::qp(bool register_copy_stats,
         // Fragments rate: DERIVE:0:U
         //
         // Tx
-        sm::make_derive(_queue_name + "_tx_frags", _stats.tx.good.nr_frags,
+        sm::make_counter(_queue_name + "_tx_frags", _stats.tx.good.nr_frags,
                         sm::description(format("Counts a number of sent fragments. Divide this value by a {} to get an average number of fragments in a Tx packet.", _queue_name + "_tx_packets"))),
         // Rx
-        sm::make_derive(_queue_name + "_rx_frags", _stats.rx.good.nr_frags,
+        sm::make_counter(_queue_name + "_rx_frags", _stats.rx.good.nr_frags,
                         sm::description(format("Counts a number of received fragments. Divide this value by a {} to get an average number of fragments in an Rx packet.", _queue_name + "_rx_packets"))),
     });
 
@@ -167,20 +166,20 @@ qp::qp(bool register_copy_stats,
             // Non-zero-copy data bytes rate: DERIVE:0:u
             //
             // Tx
-            sm::make_derive(_queue_name + "_tx_copy_bytes", _stats.tx.good.copy_bytes,
+            sm::make_counter(_queue_name + "_tx_copy_bytes", _stats.tx.good.copy_bytes,
                         sm::description(format("Counts a number of sent bytes that were handled in a non-zero-copy way. Divide this value by a {} to get a portion of data sent using a non-zero-copy flow.", _queue_name + "_tx_bytes"))),
             // Rx
-            sm::make_derive(_queue_name + "_rx_copy_bytes", _stats.rx.good.copy_bytes,
+            sm::make_counter(_queue_name + "_rx_copy_bytes", _stats.rx.good.copy_bytes,
                         sm::description(format("Counts a number of received bytes that were handled in a non-zero-copy way. Divide this value by an {} to get a portion of received data handled using a non-zero-copy flow.", _queue_name + "_rx_bytes"))),
 
             //
             // Non-zero-copy data fragments rate: DERIVE:0:u
             //
             // Tx
-            sm::make_derive(_queue_name + "_tx_copy_frags", _stats.tx.good.copy_frags,
+            sm::make_counter(_queue_name + "_tx_copy_frags", _stats.tx.good.copy_frags,
                         sm::description(format("Counts a number of sent fragments that were handled in a non-zero-copy way. Divide this value by a {} to get a portion of fragments sent using a non-zero-copy flow.", _queue_name + "_tx_frags"))),
             // Rx
-            sm::make_derive(_queue_name + "_rx_copy_frags", _stats.rx.good.copy_frags,
+            sm::make_counter(_queue_name + "_rx_copy_frags", _stats.rx.good.copy_frags,
                         sm::description(format("Counts a number of received fragments that were handled in a non-zero-copy way. Divide this value by a {} to get a portion of received fragments handled using a non-zero-copy flow.", _queue_name + "_rx_frags"))),
 
         });
@@ -197,7 +196,7 @@ void qp::configure_proxies(const std::map<unsigned, float>& cpu_weights) {
         return;
     }
     register_packet_provider([this] {
-        compat::optional<packet> p;
+        std::optional<packet> p;
         if (!_proxy_packetq.empty()) {
             p = std::move(_proxy_packetq.front());
             _proxy_packetq.pop_front();
@@ -260,7 +259,7 @@ interface::interface(std::shared_ptr<device> dev)
         return dispatch_packet(std::move(p));
     });
     dev->local_queue().register_packet_provider([this, idx = 0u] () mutable {
-            compat::optional<packet> p;
+            std::optional<packet> p;
             for (size_t i = 0; i < _pkt_providers.size(); i++) {
                 auto l3p = _pkt_providers[idx++]();
                 if (idx == _pkt_providers.size())

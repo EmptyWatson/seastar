@@ -22,7 +22,6 @@
 
 #include <seastar/net/ip.hh>
 #include <seastar/core/print.hh>
-#include <seastar/core/future-util.hh>
 #include <seastar/core/shared_ptr.hh>
 #include <seastar/net/toeplitz.hh>
 #include <seastar/core/metrics.hh>
@@ -72,7 +71,7 @@ ipv4::ipv4(interface* netif)
         //
         // Linearized events: DERIVE:0:u
         //
-        sm::make_derive("linearizations", [] { return ipv4_packet_merger::linearizations(); },
+        sm::make_counter("linearizations", [] { return ipv4_packet_merger::linearizations(); },
                         sm::description("Counts a number of times a buffer linearization was invoked during buffers merge process. "
                                         "Divide it by a total IPv4 receive packet rate to get an average number of lineraizations per packet."))
     });
@@ -299,7 +298,7 @@ void ipv4::send(ipv4_address to, ip_protocol_num proto_num, packet p, ethernet_a
     }
 }
 
-compat::optional<l3_protocol::l3packet> ipv4::get_packet() {
+std::optional<l3_protocol::l3packet> ipv4::get_packet() {
     // _packetq will be mostly empty here unless it hold remnants of previously
     // fragmented packet
     if (_packetq.empty()) {
@@ -316,7 +315,7 @@ compat::optional<l3_protocol::l3packet> ipv4::get_packet() {
         }
     }
 
-    compat::optional<l3_protocol::l3packet> p;
+    std::optional<l3_protocol::l3packet> p;
     if (!_packetq.empty()) {
         p = std::move(_packetq.front());
         _packetq.pop_front();

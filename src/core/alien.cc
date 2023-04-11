@@ -107,39 +107,39 @@ void message_queue::start() {
         // Absolute value of num packets in last tx batch.
         sm::make_queue_length("receive_batch_queue_length", _last_rcv_batch, sm::description("Current receive batch queue length")),
         // total_operations value:DERIVE:0:U
-        sm::make_derive("total_received_messages", _received, sm::description("Total number of received messages")),
+        sm::make_counter("total_received_messages", _received, sm::description("Total number of received messages")),
         // total_operations value:DERIVE:0:U
-        sm::make_derive("total_sent_messages", [this] { return _sent.value.load(); }, sm::description("Total number of sent messages")),
+        sm::make_counter("total_sent_messages", [this] { return _sent.value.load(); }, sm::description("Total number of sent messages")),
     });
 }
 
 
-void smp::qs_deleter::operator()(alien::message_queue* qs) const {
+void internal::qs_deleter::operator()(alien::message_queue* qs) const {
     for (unsigned i = 0; i < count; i++) {
         qs[i].~message_queue();
     }
     ::operator delete[](qs);
 }
 
-smp::qs smp::_qs;
-
-smp::qs smp::create_qs(const std::vector<reactor*>& reactors) {
+instance::qs instance::create_qs(const std::vector<reactor*>& reactors) {
     auto queues = reinterpret_cast<alien::message_queue*>(operator new[] (sizeof(alien::message_queue) * reactors.size()));
     for (unsigned i = 0; i < reactors.size(); i++) {
         new (&queues[i]) alien::message_queue(reactors[i]);
     }
-    return qs{queues, smp::qs_deleter{static_cast<unsigned>(reactors.size())}};
+    return qs{queues, internal::qs_deleter{static_cast<unsigned>(reactors.size())}};
 }
 
-bool smp::poll_queues() {
+bool instance::poll_queues() {
     auto& queue = _qs[this_shard_id()];
     return queue.process_incoming() != 0;
 }
 
-bool smp::pure_poll_queues() {
+bool instance::pure_poll_queues() {
     auto& queue = _qs[this_shard_id()];
     return queue.pure_poll_rx();
 }
+
+instance* internal::default_instance;
 
 }
 }

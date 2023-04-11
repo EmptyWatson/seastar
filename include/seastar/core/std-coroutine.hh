@@ -21,26 +21,22 @@
 
 #pragma once
 
-#if __cplusplus > 201703L
-#include <version>
-#endif
-
-#if !defined(__cpp_lib_coroutine) && !defined(SEASTAR_COROUTINES_TS)
-#error Coroutines TS support disabled.
-#endif
-
-#if __has_include(<coroutine>)
+// Clang < 14 only supports the TS
+#if __has_include(<coroutine>) && (!defined(__clang__) || __clang_major__ >= 14)
 #include <coroutine>
+#define SEASTAR_INTERNAL_COROUTINE_NAMESPACE std
 #elif __has_include(<experimental/coroutine>)
 #include <experimental/coroutine>
+#define SEASTAR_INTERNAL_COROUTINE_NAMESPACE std::experimental
 #else
+#define SEASTAR_INTERNAL_COROUTINE_NAMESPACE std::experimental
 
 // We are not exactly allowed to defined anything in the std namespace, but this
 // makes coroutines work with libstdc++. All of this is experimental anyway.
 
 namespace std::experimental {
 
-template<typename Promise>
+template<typename Promise = void>
 class coroutine_handle {
     void* _pointer = nullptr;
 public:
@@ -74,7 +70,83 @@ public:
     void resume() const noexcept { __builtin_coro_resume(_pointer); }
     void destroy() const noexcept { __builtin_coro_destroy(_pointer); }
     bool done() const noexcept { return __builtin_coro_done(_pointer); }
+
+    operator coroutine_handle<>() const noexcept;
 };
+
+template<>
+class coroutine_handle<void> {
+    void* _pointer = nullptr;
+public:
+    coroutine_handle() = default;
+
+    coroutine_handle &operator=(nullptr_t) noexcept {
+        _pointer = nullptr;
+        return *this;
+    }
+
+    explicit operator bool() const noexcept { return _pointer; }
+
+    static coroutine_handle from_address(void* ptr) noexcept {
+        coroutine_handle hndl;
+        hndl._pointer = ptr;
+        return hndl;
+    }
+    void* address() const noexcept { return _pointer; }
+
+    void operator()() noexcept { resume(); }
+
+    void resume() const noexcept { __builtin_coro_resume(_pointer); }
+    void destroy() const noexcept { __builtin_coro_destroy(_pointer); }
+    bool done() const noexcept { return __builtin_coro_done(_pointer); }
+};
+
+struct noop_coroutine_promise { };
+
+template <>
+struct coroutine_handle<noop_coroutine_promise> {
+    constexpr operator coroutine_handle<>() const noexcept {
+        return coroutine_handle<>::from_address(address());
+    }
+
+    constexpr explicit operator bool() const noexcept { return true; }
+
+    constexpr void* address() const noexcept { return _pointer; }
+
+    constexpr bool done() const noexcept { return false; }
+
+    void operator()() const noexcept { }
+
+    void resume() const noexcept { }
+
+    void destroy() const noexcept { }
+
+    noop_coroutine_promise& promise() const noexcept {
+        auto* p = __builtin_coro_promise(_pointer, alignof(noop_coroutine_promise), false);
+        return *static_cast<noop_coroutine_promise*>(p);
+    }
+
+private:
+    friend coroutine_handle<noop_coroutine_promise> noop_coroutine() noexcept;
+
+    coroutine_handle() noexcept = default;
+
+    static struct {
+    private:
+        static void dummy_resume_destroy() { }
+    public:
+        void (*resume)() = dummy_resume_destroy;
+        void (*destroy)() = dummy_resume_destroy;
+        struct noop_coroutine_promise _p;
+    } _frame;
+    void *_pointer = &_frame;
+};
+
+using noop_coroutine_handle = coroutine_handle<noop_coroutine_promise>;
+
+inline noop_coroutine_handle noop_coroutine() noexcept {
+    return {};
+}
 
 struct suspend_never {
     constexpr bool await_ready() const noexcept { return true; }
@@ -89,6 +161,11 @@ struct suspend_always {
     constexpr void await_suspend(coroutine_handle<T>) noexcept { }
     constexpr void await_resume() noexcept { }
 };
+
+template <typename Promise>
+coroutine_handle<Promise>::operator coroutine_handle<>() const noexcept {
+    return coroutine_handle<>::from_address(address());
+}
 
 template<typename T, typename... Args>
 class coroutine_traits { };

@@ -101,9 +101,6 @@ public:
     const metric_name_type & name() const {
         return _name;
     }
-    const metrics::metric_type_def & inherit_type() const {
-        return _labels.at(type_label.name());
-    }
     const labels_type& labels() const {
         return _labels;
     }
@@ -113,8 +110,7 @@ public:
     bool operator==(const metric_id&) const;
 private:
     auto as_tuple() const {
-        return std::tie(group_name(), instance_id(), name(),
-                    inherit_type(), labels());
+        return std::tie(group_name(), instance_id(), name(), labels());
     }
     group_name_type _group;
     metric_name_type _name;
@@ -153,8 +149,10 @@ namespace impl {
  */
 struct metric_family_info {
     data_type type;
+    metric_type_def inherit_type;
     description d;
     sstring name;
+    std::vector<std::string> aggregate_labels;
 };
 
 
@@ -164,6 +162,7 @@ struct metric_family_info {
 struct metric_info {
     metric_id id;
     bool enabled;
+    skip_when_empty should_skip_when_empty;
 };
 
 
@@ -188,7 +187,7 @@ class registered_metric {
     metric_function _f;
     shared_ptr<impl> _impl;
 public:
-    registered_metric(metric_id id, metric_function f, bool enabled=true);
+    registered_metric(metric_id id, metric_function f, bool enabled=true, skip_when_empty skip=skip_when_empty::no);
     virtual ~registered_metric() {}
     virtual metric_value operator()() const {
         return _f();
@@ -201,7 +200,9 @@ public:
     void set_enabled(bool b) {
         _info.enabled = b;
     }
-
+    void set_skip_when_empty(skip_when_empty skip) noexcept {
+        _info.should_skip_when_empty = skip;
+    }
     const metric_id& get_id() const {
         return _info.id;
     }
@@ -323,6 +324,7 @@ class impl {
     config _config;
     bool _dirty = true;
     shared_ptr<metric_metadata> _metadata;
+    std::set<sstring> _labels;
     std::vector<std::vector<metric_function>> _current_metrics;
 public:
     value_map& get_value_map() {
@@ -333,7 +335,7 @@ public:
         return _value_map;
     }
 
-    void add_registration(const metric_id& id, data_type type, metric_function f, const description& d, bool enabled);
+    void add_registration(const metric_id& id, const metric_type& type, metric_function f, const description& d, bool enabled, skip_when_empty skip, const std::vector<std::string>& aggregate_labels);
     void remove_registration(const metric_id& id);
     future<> stop() {
         return make_ready_future<>();
@@ -353,6 +355,10 @@ public:
 
     void dirty() {
         _dirty = true;
+    }
+
+    const std::set<sstring>& get_labels() const noexcept {
+        return _labels;
     }
 };
 
@@ -374,16 +380,21 @@ void unregister_metric(const metric_id & id);
 std::unique_ptr<metric_groups_def> create_metric_groups();
 
 }
+
+/// Metrics configuration options.
+struct options : public program_options::option_group {
+    /// \brief The hostname used by the metrics.
+    ///
+    /// If not set, the local hostname will be used.
+    program_options::value<std::string> metrics_hostname;
+
+    options(program_options::option_group* parent_group);
+};
+
 /*!
  * \brief set the metrics configuration
  */
-future<> configure(const boost::program_options::variables_map & opts);
-
-/*!
- * \brief get the metrics configuration desciprtion
- */
-
-boost::program_options::options_description get_options_description();
+future<> configure(const options& opts);
 
 }
 }
