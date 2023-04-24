@@ -40,7 +40,7 @@ connection::connection(connected_socket&& fd)
         : _fd(std::move(fd))
         , _read_buf(_fd.input())
         , _write_buf(_fd.output())
-//        , _closed(_fd.wait_input_shutdown().finally([me = shared_from_this()] {}))
+        , _closed(_closed_promise.get_future().finally([me = shared_from_this()] {}))
 {
 }
 
@@ -143,11 +143,11 @@ input_stream<char> connection::in(httpd::reply& rep) {
 
 future<> connection::close() {
     return when_all(_read_buf.close(), _write_buf.close()).discard_result().then([this] {
-//        auto la = _fd.local_address();
-//        return std::move(_closed).then([la = std::move(la)] {
-//            http_log.trace("destroyed connection {}", la);
-//        });
-          return make_ready_future<>();
+        _closed_promise.set_value();
+        auto la = _fd.local_address();
+        return std::move(_closed).then([la = std::move(la)] {
+            http_log.trace("destroyed connection {}", la);
+        });
     });
 }
 

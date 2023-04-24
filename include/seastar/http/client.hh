@@ -52,7 +52,8 @@ class connection : public enable_shared_from_this<connection> {
     input_stream<char> _read_buf;
     output_stream<char> _write_buf;
     hook_t _hook;
-//    future<> _closed;
+	promise<> _closed_promise;
+    future<> _closed;
 
 public:
     /**
