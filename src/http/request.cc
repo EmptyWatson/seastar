@@ -24,15 +24,15 @@
 #include <seastar/http/common.hh>
 
 namespace seastar {
-namespace http {
+namespace httpd {
 
 sstring request::format_url() const {
     sstring query = "";
     sstring delim = "?";
     for (const auto& p : query_parameters) {
-        query += delim + internal::url_encode(p.first);
+        query += delim + http::internal::url_encode(p.first);
         if (!p.second.empty()) {
-            query += "=" + internal::url_encode(p.second);
+            query += "=" + http::internal::url_encode(p.second);
         }
         delim = "&";
     }
