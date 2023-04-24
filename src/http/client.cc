@@ -29,20 +29,22 @@
 #include <seastar/http/response_parser.hh>
 #include <seastar/http/internal/content_source.hh>
 
+#include <optional>
+
 namespace seastar {
 logger http_log("http");
 namespace http {
-namespace experimental {
+//namespace experimental {
 
 connection::connection(connected_socket&& fd)
         : _fd(std::move(fd))
         , _read_buf(_fd.input())
         , _write_buf(_fd.output())
-        , _closed(_fd.wait_input_shutdown().finally([me = shared_from_this()] {}))
+//        , _closed(_fd.wait_input_shutdown().finally([me = shared_from_this()] {}))
 {
 }
 
-future<> connection::write_body(request& req) {
+future<> connection::write_body(httpd::request& req) {
     if (req.body_writer) {
         if (req.content_length != 0) {
             auto orig_content_length = req.content_length;
@@ -64,23 +66,23 @@ future<> connection::write_body(request& req) {
     }
 }
 
-future<std::optional<reply>> connection::maybe_wait_for_continue(request& req) {
+future<std::optional<httpd::reply>> connection::maybe_wait_for_continue(httpd::request& req) {
     if (req.get_header("Expect") == "") {
-        return make_ready_future<std::optional<reply>>(std::nullopt);
+        return make_ready_future<std::optional<httpd::reply>>(std::nullopt);
     }
 
     return _write_buf.flush().then([this] {
-        return recv_reply().then([] (reply rep) {
-            if (rep._status == reply::status_type::continue_) {
-                return make_ready_future<std::optional<reply>>(std::nullopt);
+        return recv_reply().then([] (httpd::reply rep) {
+            if (rep._status == httpd::reply::status_type::continue_) {
+                return make_ready_future<std::optional<httpd::reply>>(std::nullopt);
             } else {
-                return make_ready_future<std::optional<reply>>(std::move(rep));
+                return make_ready_future<std::optional<httpd::reply>>(std::move(rep));
             }
         });
     });
 }
 
-future<> connection::send_request_head(request& req) {
+future<> connection::send_request_head(httpd::request& req) {
     if (req._version.empty()) {
         req._version = "1.1";
     }
@@ -98,7 +100,7 @@ future<> connection::send_request_head(request& req) {
     });
 }
 
-future<reply> connection::recv_reply() {
+future<httpd::reply> connection::recv_reply() {
     http_response_parser parser;
     return do_with(std::move(parser), [this] (auto& parser) {
         parser.init();
@@ -108,17 +110,17 @@ future<reply> connection::recv_reply() {
             }
 
             auto resp = parser.get_parsed_response();
-            return make_ready_future<reply>(std::move(*resp));
+            return make_ready_future<httpd::reply>(std::move(*resp));
         });
     });
 }
 
-future<reply> connection::make_request(request req) {
+future<httpd::reply> connection::make_request(httpd::request req) {
     return do_with(std::move(req), [this] (auto& req) {
         return send_request_head(req).then([this, &req] {
-            return maybe_wait_for_continue(req).then([this, &req] (std::optional<reply> cont) {
+            return maybe_wait_for_continue(req).then([this, &req] (std::optional<httpd::reply> cont) {
                 if (cont.has_value()) {
-                    return make_ready_future<reply>(std::move(*cont));
+                    return make_ready_future<httpd::reply>(std::move(*cont));
                 }
 
                 return write_body(req).then([this] {
@@ -131,8 +133,8 @@ future<reply> connection::make_request(request req) {
     });
 }
 
-input_stream<char> connection::in(reply& rep) {
-    if (http::request::case_insensitive_cmp()(rep.get_header("Transfer-Encoding"), "chunked")) {
+input_stream<char> connection::in(httpd::reply& rep) {
+    if (httpd::request::case_insensitive_cmp()(rep.get_header("Transfer-Encoding"), "chunked")) {
         return input_stream<char>(data_source(std::make_unique<httpd::internal::chunked_source_impl>(_read_buf, rep.chunk_extensions, rep.trailing_headers)));
     }
 
@@ -141,10 +143,11 @@ input_stream<char> connection::in(reply& rep) {
 
 future<> connection::close() {
     return when_all(_read_buf.close(), _write_buf.close()).discard_result().then([this] {
-        auto la = _fd.local_address();
-        return std::move(_closed).then([la = std::move(la)] {
-            http_log.trace("destroyed connection {}", la);
-        });
+//        auto la = _fd.local_address();
+//        return std::move(_closed).then([la = std::move(la)] {
+//            http_log.trace("destroyed connection {}", la);
+//        });
+          return make_ready_future<>();
     });
 }
 
@@ -229,9 +232,9 @@ auto client::with_connection(Fn&& fn) {
     });
 }
 
-future<> client::make_request(request req, reply_handler handle, reply::status_type expected) {
+future<> client::make_request(httpd::request req, reply_handler handle, httpd::reply::status_type expected) {
     return with_connection([req = std::move(req), handle = std::move(handle), expected] (connection& con) mutable {
-        return con.make_request(std::move(req)).then([&con, expected, handle = std::move(handle)] (reply rep) mutable {
+        return con.make_request(std::move(req)).then([&con, expected, handle = std::move(handle)] (httpd::reply rep) mutable {
             if (rep._status != expected) {
                 return make_exception_future<>(std::runtime_error(format("request finished with {}", rep._status)));
             }
@@ -256,6 +259,6 @@ future<> client::close() {
     });
 }
 
-} // experimental namespace
+//} // experimental namespace
 } // http namespace
 } // seastar namespace

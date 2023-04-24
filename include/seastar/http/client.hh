@@ -31,13 +31,12 @@ namespace bi = boost::intrusive;
 namespace seastar {
 
 namespace tls { class certificate_credentials; }
+namespace httpd { struct request; }
+namespace httpd { struct reply; }
 
 namespace http {
 
-struct request;
-struct reply;
-
-namespace experimental {
+//namespace experimental {
 
 /**
  * \brief Class connection represents an HTTP connection over a given transport
@@ -53,7 +52,7 @@ class connection : public enable_shared_from_this<connection> {
     input_stream<char> _read_buf;
     output_stream<char> _write_buf;
     hook_t _hook;
-    future<> _closed;
+//    future<> _closed;
 
 public:
     /**
@@ -79,7 +78,7 @@ public:
      * \param rq -- request to be sent
      *
      */
-    future<reply> make_request(request rq);
+    future<httpd::reply> make_request(httpd::request rq);
 
     /**
      * \brief Get a reference on the connection input stream
@@ -89,7 +88,7 @@ public:
      * extentions
      *
      */
-    input_stream<char> in(reply& rep);
+    input_stream<char> in(httpd::reply& rep);
 
     /**
      * \brief Closes the connection
@@ -100,10 +99,10 @@ public:
     future<> close();
 
 private:
-    future<> send_request_head(request& rq);
-    future<std::optional<reply>> maybe_wait_for_continue(request& req);
-    future<> write_body(request& rq);
-    future<reply> recv_reply();
+    future<> send_request_head(httpd::request& rq);
+    future<std::optional<httpd::reply>> maybe_wait_for_continue(httpd::request& req);
+    future<> write_body(httpd::request& rq);
+    future<httpd::reply> recv_reply();
 };
 
 /**
@@ -153,7 +152,7 @@ class client {
     auto with_connection(Fn&& fn);
 
 public:
-    using reply_handler = noncopyable_function<future<>(const reply&, input_stream<char>&& body)>;
+    using reply_handler = noncopyable_function<future<>(const httpd::reply&, input_stream<char>&& body)>;
     /**
      * \brief Construct a simple client
      *
@@ -203,7 +202,7 @@ public:
      * \param expected -- the expected reply status code
      *
      */
-    future<> make_request(request req, reply_handler handle, reply::status_type expected = reply::status_type::ok);
+    future<> make_request(httpd::request req, reply_handler handle, httpd::reply::status_type expected = httpd::reply::status_type::ok);
 
     /**
      * \brief Closes the client
@@ -213,7 +212,7 @@ public:
     future<> close();
 };
 
-} // experimental namespace
+//} // experimental namespace
 
 } // http namespace
 
