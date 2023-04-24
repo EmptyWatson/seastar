@@ -39,7 +39,10 @@
 #include <seastar/http/mime_types.hh>
 #include <seastar/core/iostream.hh>
 
+
 namespace seastar {
+
+namespace http { class connection; }
 
 namespace httpd {
 class connection;
@@ -275,7 +278,7 @@ private:
     void add_param(const std::string_view& param);
     sstring request_line() const;
     future<> write_request_headers(output_stream<char>& out);
-    friend class connection;
+    friend class http::connection;
 };
 
 } // namespace httpd

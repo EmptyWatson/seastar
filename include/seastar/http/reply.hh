@@ -39,6 +39,8 @@
 
 namespace seastar {
 
+struct http_response;
+
 namespace httpd {
 
 class connection;
@@ -60,6 +62,7 @@ struct reply {
         nonauthoritative_information = 203, //!< nonauthoritative_information
         no_content = 204, //!< no_content
         reset_content = 205, //!< reset_content
+        partial_content = 206, //! partial_content
         multiple_choices = 300, //!< multiple_choices
         moved_permanently = 301, //!< moved_permanently
         moved_temporarily = 302, //!< moved_temporarily
@@ -104,15 +107,34 @@ struct reply {
      * The content to be sent in the reply.
      */
     sstring _content;
+    size_t content_length = 0; // valid when received via client connection
 
     sstring _response_line;
+    std::unordered_map<sstring, sstring> trailing_headers;
+    std::unordered_map<sstring, sstring> chunk_extensions;
+
     reply()
             : _status(status_type::ok) {
     }
 
+    explicit reply(http_response&&);
+
     reply& add_header(const sstring& h, const sstring& value) {
         _headers[h] = value;
         return *this;
+    }
+
+    /**
+     * Search for the first header of a given name
+     * @param name the header name
+     * @return a pointer to the header value, if it exists or empty string
+     */
+    sstring get_header(const sstring& name) const {
+        auto res = _headers.find(name);
+        if (res == _headers.end()) {
+            return "";
+        }
+        return res->second;
     }
 
     reply& set_version(const sstring& version) {
@@ -198,6 +220,10 @@ private:
     friend class connection;
 };
 
+std::ostream& operator<<(std::ostream& os, reply::status_type st);
 } // namespace httpd
 
 }
+#if FMT_VERSION >= 90000
+template <> struct fmt::formatter<seastar::http::reply::status_type> : fmt::ostream_formatter {};
+#endif
