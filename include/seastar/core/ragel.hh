@@ -103,10 +103,12 @@ protected:
     int _fsm_act;
     char* _fsm_ts;
     char* _fsm_te;
+	size_t _parsed_size  = 0;
     sstring_builder _builder;
 protected:
     void init_base() {
         _builder.reset();
+        _parsed_size = 0;
     }
     void prepush() {
         if (_fsm_top == _fsm_stack_size) {
@@ -130,10 +132,16 @@ public:
         char* eof = buf.empty() ? pe : nullptr;
         char* parsed = static_cast<ConcreteParser*>(this)->parse(p, pe, eof);
         if (parsed) {
-            buf.trim_front(parsed - p);
+            size_t len = (parsed - p);
+            buf.trim_front(len);
+            _parsed_size += len;
             return make_ready_future<unconsumed_remainder>(std::move(buf));
         }
         return make_ready_future<unconsumed_remainder>();
+    }
+
+    size_t get_parsed_size() const {
+        return _parsed_size;
     }
 };
 
