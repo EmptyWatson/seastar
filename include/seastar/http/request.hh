@@ -274,10 +274,11 @@ struct request {
      */
     static request make(httpd::operation_type type, sstring host, sstring path);
 
+    future<> write_request_headers(output_stream<char>& out);
+
+    sstring request_line() const;
 private:
     void add_param(const std::string_view& param);
-    sstring request_line() const;
-    future<> write_request_headers(output_stream<char>& out);
     friend class http::connection;
 };
 
