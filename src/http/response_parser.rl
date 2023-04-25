@@ -22,8 +22,23 @@
 #include <seastar/core/ragel.hh>
 #include <memory>
 #include <unordered_map>
+#include <algorithm>
 
 namespace seastar {
+
+struct case_ignore_cmp {
+    bool operator()(const sstring& s1, const sstring& s2) const {
+        return std::equal(s1.begin(), s1.end(), s2.begin(), s2.end(),
+                [](char a, char b) { return ::tolower(a) == ::tolower(b); });
+    }
+};
+
+struct case_ignore_hash {
+    size_t operator()(sstring s) const {
+        std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+        return std::hash<sstring>()(s);
+    }
+};
 
 struct http_response {
     sstring _version;
@@ -111,7 +126,7 @@ field_content = (field_vchar | sp_ht)*;
 field = tchar+ >mark %store_field_name;
 value = field_content >mark %trim_trailing_whitespace_and_store_value;
 status_code = (digit digit digit) >mark %store_status;
-start_line = http_version space status_code space (any - cr - lf)* crlf;
+start_line = http_version space status_code (any - cr - lf)* crlf;
 header_1st = (field ':' sp_ht* <: value crlf) %assign_field;
 header_cont = (sp_ht+ <: value crlf) %extend_field;
 header = header_1st header_cont*;
