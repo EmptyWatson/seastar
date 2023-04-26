@@ -201,6 +201,14 @@ class chunked_source_impl : public data_source_impl {
             }
             __builtin_unreachable();
         }
+
+        parsing_state get_state() const {
+            return _ps;
+        }
+
+        bool is_end() const {
+            return _end_of_request;
+        }
     };
     input_stream<char>& _inp;
     chunk_parser _chunk;
@@ -218,6 +226,10 @@ public:
 
     virtual future<> close() override {
         return make_ready_future<>();
+    }
+
+    virtual bool is_end() const {
+        return _chunk.is_end();
     }
 };
 
