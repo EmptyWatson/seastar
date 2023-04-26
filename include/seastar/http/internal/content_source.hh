@@ -83,6 +83,7 @@ class chunked_source_impl : public data_source_impl {
         };
         http_chunk_size_and_ext_parser _size_and_ext_parser;
         http_chunk_trailer_parser _trailer_parser;
+        size_t _size_and_ext_parser_parsed_size = 0;
 
         temporary_buffer<char> _buf;
         size_t _current_chunk_bytes_read = 0;
@@ -176,6 +177,7 @@ class chunked_source_impl : public data_source_impl {
                         return make_exception_future<consumption_result_type>(bad_chunk_exception("The actual chunk length exceeds the specified length"));
                     } else {
                         _ps = parsing_state::size_and_ext;
+                        _size_and_ext_parser_parsed_size += _size_and_ext_parser.get_parsed_size();
                         _size_and_ext_parser.init();
                         data.trim_front(1);
                         if (data.empty()) {
@@ -209,6 +211,13 @@ class chunked_source_impl : public data_source_impl {
         bool is_end() const {
             return _end_of_request;
         }
+
+        // 不包含数据部分，只包含parsers部分
+        size_t get_parsers_recv_size() const {
+            return (_size_and_ext_parser_parsed_size 
+                    + _size_and_ext_parser.get_parsed_size() 
+                    + _trailer_parser.get_parsed_size());
+        }
     };
     input_stream<char>& _inp;
     chunk_parser _chunk;
@@ -230,6 +239,10 @@ public:
 
     virtual bool is_end() const {
         return _chunk.is_end();
+    }
+
+    virtual size_t get_parsers_recv_size() const {
+        return _chunk.get_parsers_recv_size();
     }
 };
 
