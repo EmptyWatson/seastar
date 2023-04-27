@@ -107,6 +107,10 @@ output_stream<char> connected_socket::output(size_t buffer_size) {
     return output_stream<char>(_csi->sink(), buffer_size, opts);
 }
 
+output_stream<char> connected_socket::output(size_t buffer_size, output_stream_options opts) {
+    return output_stream<char>(_csi->sink(), buffer_size, opts);
+}
+
 void connected_socket::set_nodelay(bool nodelay) {
     _csi->set_nodelay(nodelay);
 }
