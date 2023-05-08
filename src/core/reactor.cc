@@ -334,6 +334,21 @@ reactor::do_write_some(pollable_fd_state& fd, const void* buffer, size_t len) {
 }
 
 future<size_t>
+reactor::do_write_some_usewrite(pollable_fd_state& fd, const void* buffer, size_t len) {
+    return writeable(fd).then([this, &fd, buffer, len] () mutable {
+        auto r = fd.fd.write(buffer, len);
+        if (!r) {
+            return do_write_some_usewrite(fd, buffer, len);
+        }
+        if (size_t(*r) == len) {
+            fd.speculate_epoll(EPOLLOUT);
+        }
+        return make_ready_future<size_t>(*r);
+    });
+}
+
+
+future<size_t>
 reactor::do_write_some(pollable_fd_state& fd, net::packet& p) {
     return writeable(fd).then([this, &fd, &p] () mutable {
         static_assert(offsetof(iovec, iov_base) == offsetof(net::fragment, base) &&
@@ -371,6 +386,17 @@ reactor::write_all_part(pollable_fd_state& fd, const void* buffer, size_t len, s
     }
 }
 
+future<>
+reactor::write_all_part_usewrite(pollable_fd_state& fd, const void* buffer, size_t len, size_t completed) {
+    if (completed == len) {
+        return make_ready_future<>();
+    } else {
+        return _backend->write_some_usewrite(fd, static_cast<const char*>(buffer) + completed, len - completed).then(
+                [&fd, buffer, len, completed, this] (size_t part) mutable {
+            return write_all_part_usewrite(fd, buffer, len, completed + part);
+        });
+    }
+}
 
 future<temporary_buffer<char>>
 reactor::do_recv_some(pollable_fd_state& fd, internal::buffer_allocator* ba) {
@@ -392,6 +418,12 @@ future<>
 reactor::write_all(pollable_fd_state& fd, const void* buffer, size_t len) {
     assert(len);
     return write_all_part(fd, buffer, len, 0);
+}
+
+future<>
+reactor::write_all_usewrite(pollable_fd_state& fd, const void* buffer, size_t len) {
+    assert(len);
+    return write_all_part_usewrite(fd, buffer, len, 0);
 }
 
 future<size_t> pollable_fd_state::read_some(char* buffer, size_t size) {
@@ -416,6 +448,10 @@ future<size_t> pollable_fd_state::write_some(net::packet& p) {
 
 future<> pollable_fd_state::write_all(const char* buffer, size_t size) {
     return engine().write_all(*this, buffer, size);
+}
+
+future<> pollable_fd_state::write_all_usewrite(const char* buffer, size_t size) {
+    return engine().write_all_usewrite(*this, buffer, size);
 }
 
 future<> pollable_fd_state::write_all(const uint8_t* buffer, size_t size) {

@@ -637,6 +637,11 @@ reactor_backend_aio::write_some(pollable_fd_state& fd, const void* buffer, size_
 }
 
 future<size_t>
+reactor_backend_aio::write_some_usewrite(pollable_fd_state& fd, const void* buffer, size_t len) {
+    return _r.do_write_some_usewrite(fd, buffer, len);
+}
+
+future<size_t>
 reactor_backend_aio::write_some(pollable_fd_state& fd, net::packet& p) {
     return _r.do_write_some(fd, p);
 }
@@ -1013,6 +1018,11 @@ reactor_backend_epoll::write_some(pollable_fd_state& fd, const void* buffer, siz
 }
 
 future<size_t>
+reactor_backend_epoll::write_some_usewrite(pollable_fd_state& fd, const void* buffer, size_t len) {
+    return _r.do_write_some_usewrite(fd, buffer, len);
+}
+
+future<size_t>
 reactor_backend_epoll::write_some(pollable_fd_state& fd, net::packet& p) {
     return _r.do_write_some(fd, p);
 }
@@ -1121,6 +1131,11 @@ reactor_backend_osv::read_some(pollable_fd_state& fd, internal::buffer_allocator
 future<size_t>
 reactor_backend_osv::write_some(pollable_fd_state& fd, const void* buffer, size_t len) {
     return engine().do_write_some(fd, buffer, len);
+}
+
+future<size_t>
+reactor_backend_osv::write_some_usewrite(pollable_fd_state& fd, const void* buffer, size_t len) {
+    return engine().do_write_some_usewrite(fd, buffer, len);
 }
 
 future<size_t>
@@ -1835,6 +1850,46 @@ public:
         };
         auto desc = std::make_unique<write_completion>(fd, len);
         auto req = internal::io_request::make_send(fd.fd.get(), buffer, len, MSG_NOSIGNAL);
+        return submit_request(std::move(desc), std::move(req));
+    }
+    virtual future<size_t> write_some_usewrite(pollable_fd_state& fd, const void* buffer, size_t len) override {
+        if (fd.take_speculation(EPOLLOUT)) {
+            try {
+                auto r = fd.fd.write(buffer, len);
+                if (r) {
+                    if (size_t(*r) == len) {
+                        fd.speculate_epoll(EPOLLOUT);
+                    }
+                    return make_ready_future<size_t>(*r);
+                }
+            } catch (...) {
+                return current_exception_as_future<size_t>();
+            }
+        }
+        class write_completion final : public io_completion {
+            pollable_fd_state& _fd;
+            const size_t _to_write;
+            promise<size_t> _result;
+        public:
+            write_completion(pollable_fd_state& fd, size_t to_write)
+                : _fd(fd), _to_write(to_write) {}
+            void complete(size_t bytes) noexcept final {
+                if (bytes == _to_write) {
+                    _fd.speculate_epoll(EPOLLOUT);
+                }
+                _result.set_value(bytes);
+                delete this;
+            }
+            void set_exception(std::exception_ptr eptr) noexcept final {
+                _result.set_exception(eptr);
+                delete this;
+            }
+            future<size_t> get_future() {
+                return _result.get_future();
+            }
+        };
+        auto desc = std::make_unique<write_completion>(fd, len);
+        auto req = internal::io_request::make_write(fd.fd.get(), 0, buffer, len, true);
         return submit_request(std::move(desc), std::move(req));
     }
 

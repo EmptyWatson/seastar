@@ -203,6 +203,7 @@ public:
     virtual future<temporary_buffer<char>> read_some(pollable_fd_state& fd, internal::buffer_allocator* ba) = 0;
     virtual future<size_t> write_some(pollable_fd_state& fd, net::packet& p) = 0;
     virtual future<size_t> write_some(pollable_fd_state& fd, const void* buffer, size_t len) = 0;
+    virtual future<size_t> write_some_usewrite(pollable_fd_state& fd, const void* buffer, size_t len) = 0;
     virtual future<temporary_buffer<char>> recv_some(pollable_fd_state& fd, internal::buffer_allocator* ba) = 0;
 
     virtual bool do_blocking_io() const {
@@ -269,6 +270,7 @@ public:
     virtual future<temporary_buffer<char>> read_some(pollable_fd_state& fd, internal::buffer_allocator* ba) override;
     virtual future<size_t> write_some(pollable_fd_state& fd, net::packet& p) override;
     virtual future<size_t> write_some(pollable_fd_state& fd, const void* buffer, size_t len) override;
+    virtual future<size_t> write_some_usewrite(pollable_fd_state& fd, const void* buffer, size_t len) override;
     virtual future<temporary_buffer<char>> recv_some(pollable_fd_state& fd, internal::buffer_allocator* ba) override;
 
     virtual void signal_received(int signo, siginfo_t* siginfo, void* ignore) override;
@@ -318,6 +320,7 @@ public:
     virtual future<temporary_buffer<char>> read_some(pollable_fd_state& fd, internal::buffer_allocator* ba) override;
     virtual future<size_t> write_some(pollable_fd_state& fd, net::packet& p) override;
     virtual future<size_t> write_some(pollable_fd_state& fd, const void* buffer, size_t len) override;
+    virtual future<size_t> write_some_usewrite(pollable_fd_state& fd, const void* buffer, size_t len) override;
     virtual future<temporary_buffer<char>> recv_some(pollable_fd_state& fd, internal::buffer_allocator* ba) override;
 
     virtual void signal_received(int signo, siginfo_t* siginfo, void* ignore) override;
@@ -363,6 +366,7 @@ public:
     virtual future<temporary_buffer<char>> read_some(pollable_fd_state& fd, internal::buffer_allocator* ba) override;
     virtual future<size_t> write_some(net::packet& p) override;
     virtual future<size_t> write_some(pollable_fd_state& fd, const void* buffer, size_t len) override;
+    virtual future<size_t> write_some_usewrite(pollable_fd_state& fd, const void* buffer, size_t len) override;
 
     void enable_timer(steady_clock_type::time_point when);
     virtual pollable_fd_state_ptr

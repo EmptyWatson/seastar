@@ -98,6 +98,7 @@ public:
     future<size_t> read_some(const std::vector<iovec>& iov);
     future<temporary_buffer<char>> read_some(internal::buffer_allocator* ba);
     future<> write_all(const char* buffer, size_t size);
+    future<> write_all_usewrite(const char* buffer, size_t size);
     future<> write_all(const uint8_t* buffer, size_t size);
     future<size_t> write_some(net::packet& p);
     future<> write_all(net::packet& p);
@@ -146,6 +147,11 @@ public:
     future<> write_all(const char* buffer, size_t size) {
         return _s->write_all(buffer, size);
     }
+
+    future<> write_all_usewrite(const char* buffer, size_t size) {
+        return _s->write_all_usewrite(buffer, size);
+    }
+
     future<> write_all(const uint8_t* buffer, size_t size) {
         return _s->write_all(buffer, size);
     }
