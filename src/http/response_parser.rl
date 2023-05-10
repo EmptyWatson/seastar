@@ -18,6 +18,7 @@
 /*
  * Copyright (C) 2015 Cloudius Systems, Ltd.
  */
+#pragma once
 
 #include <seastar/core/ragel.hh>
 #include <memory>
