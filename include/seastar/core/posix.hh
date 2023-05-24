@@ -184,6 +184,29 @@ public:
         throw_system_error_on(r == -1, "ioctl");
         return r;
     }
+
+    int ioctl_nothrow(int request) {
+        return ioctl_nothrow(request, 0);
+    }
+    int ioctl_nothrow(int request, int value) {
+        int r = ::ioctl(_fd, request, value);
+        return r;
+    }
+    int ioctl_nothrow(int request, unsigned int value) {
+        int r = ::ioctl(_fd, request, value);
+        return r;
+    }
+    template <class X>
+    int ioctl_nothrow(int request, X& data) {
+        int r = ::ioctl(_fd, request, &data);
+        return r;
+    }
+    template <class X>
+    int ioctl_nothrow(int request, X&& data) {
+        int r = ::ioctl(_fd, request, &data);
+        return r;
+    }
+
     template <class X>
     int setsockopt(int level, int optname, X&& data) {
         int r = ::setsockopt(_fd, level, optname, &data, sizeof(data));
