@@ -85,6 +85,8 @@
 #include "internal/pollable_fd.hh"
 #include "internal/poll.hh"
 
+#include <time.h>
+
 #ifdef HAVE_OSV
 #include <osv/sched.hh>
 #include <osv/mutex.h>
@@ -467,8 +469,29 @@ public:
     ~reactor();
     void operator=(const reactor&) = delete;
 
+    static inline int64_t time_ns() {
+    #if 0
+        struct timeval t;
+        gettimeofday(&t, NULL);
+        return ((t.tv_sec * 1000000) + t.tv_usec) * 1000;
+    #else
+        struct timespec val = {0, 0};
+        //CLOCK_REALTIME_COARSE
+        //CLOCK_MONOTONIC_COARSE
+        //CLOCK_REALTIME
+        //CLOCK_MONOTONIC
+        clock_gettime(CLOCK_MONOTONIC_COARSE, &val);
+        int64_t v;
+        v = (int64_t) val.tv_sec * 1000000000LL;
+        v += (int64_t) val.tv_nsec;
+        return (v);
+    #endif
+    }
+
     static sched_clock::time_point now() noexcept {
-        return sched_clock::now();
+        auto t = std::chrono::nanoseconds{time_ns()};
+        return sched_clock::time_point(t);
+        //return sched_clock::now();
     }
     sched_clock::duration uptime() {
         return now() - _start_time;

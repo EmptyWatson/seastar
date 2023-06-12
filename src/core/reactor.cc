@@ -633,7 +633,9 @@ timespec to_timespec(steady_clock_type::time_point t) {
 }
 
 void lowres_clock::update() noexcept {
-    lowres_clock::_now = lowres_clock::time_point(std::chrono::steady_clock::now().time_since_epoch());
+    //lowres_clock::_now = lowres_clock::time_point(std::chrono::steady_clock::now().time_since_epoch());
+    auto t = std::chrono::nanoseconds{reactor::time_ns()};
+    lowres_clock::_now = lowres_clock::time_point(t);
     lowres_system_clock::_now = lowres_system_clock::time_point(std::chrono::system_clock::now().time_since_epoch());
 }
 
